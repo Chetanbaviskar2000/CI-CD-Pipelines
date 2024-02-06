@@ -1,0 +1,1621 @@
+Data Disk Modify (Pipeline file)
+# This pipeline is specific for the VM Data Disk Modify use case. For this use case, it has few pre-requisites installed apart from Ansible
+# We would first install the Ansible and then install Ansible collections for Azure.
+######################################################################################################################################
+parameters:
+- name: extraAnsibleVars
+  type: object
+- name: useCaseName
+  type: string
+- name: agentPool
+  type: string 
+- name: ansibleVersion
+  type: string
+- name: connectedServiceName
+  type: string
+- name: keyVaultName
+  type: string
+- name: environment
+  type: string
+
+stages:
+- stage: "Azure_VM_Data_Disk_Modify"
+  jobs:
+  - job: "Install_Ansible_Call_Playbook" 
+    pool: ${{ parameters.agentPool }}
+     
+    steps: 
+     - script: |
+         echo "##vso[build.addbuildtag]Automation-${{parameters.useCaseName}}"
+         echo "##vso[build.addbuildtag]Project-$(System.TeamProject)"
+         echo "##vso[build.addbuildtag]AgentPool-${{ parameters.agentPool }}"
+         echo "##vso[build.addbuildtag]Technology-Ansible"
+         echo "##vso[build.addbuildtag]Requestor-${{convertToJson(parameters.extraAnsibleVars.requested_for)}}"
+       displayName: Add Pipeline Build Tags
+       condition: always() 
+
+     - bash: sudo pip3 install --upgrade pip
+       displayName: "Pip upgrade" 
+
+     - script: pip install ansible==${{parameters.ansibleVersion}}  #This installs the Ansible in current user`s home directory i.e.azDevOps user`s home directory, all ansible commands to be executed from here.
+       displayName: "Install Ansible"
+        
+     - task: AzureKeyVault@2
+       name: 'getsecret'
+       displayName: 'Get secrets'
+       inputs:
+         connectedServiceName: ${{parameters.connectedServiceName}} 
+         KeyVaultName: ${{parameters.keyVaultName}}
+         secretsFilter: 'tenantId,clientId,clientPassword,serviceAccountUser,serviceAccountPass,IaCADOsvcPAT'
+         runAsPreJob: false
+     
+     - script: sudo apt-get install python-dev libkrb5-dev
+       displayName: "Install Kerberos libraries"
+     - script: pip install pywinrm
+       displayName: "Install WinRM module"
+     - script: pip install kerberos
+       displayName: "Install Kerberos module"
+     - script: sudo DEBIAN_FRONTEND=noninteractive apt-get -yq install krb5-user
+       displayName: "Installing Kerberos Authentication Pre-requisites"
+     - bash: |
+           # Updating Ansible Config file
+            sudo truncate -s 0 /etc/krb5.conf
+            sudo -- sh -c "cat << "EOF" > /etc/krb5.conf
+            [logging]
+                default = FILE:/var/log/krb5libs.log
+                kdc = FILE:/var/log/krb5kdc.log
+                admin_server = FILE:/var/log/kadmind.log
+            [libdefaults]
+            default_realm = MGROUPNET.COM
+
+            [realms]
+                   MGROUPNET.COM = {
+                            kdc = MPS1027.MGROUPNET.COM
+                            kdc = MPS1019.MGROUPNET.COM
+                            kdc = mps1012.mgroupnet.com
+                            master_kdc = MPS1027.MGROUPNET.COM
+                            admin_server = MPS1019.MGROUPNET.COM
+                            default_domain = mgroupnet.com
+                   }
+            [domain_realm]
+                   mgroupnet.com = MGROUPNET.COM
+                   .mgroupnet.com = MGROUPNET.COM
+           EOF " 
+           cat /etc/krb5.conf
+    
+    #Install Ansible Module for Azure 
+     - bash: sudo pip3 install ansible[azure]
+       displayName: "Install Ansible Azure using pip"
+     - script: sudo apt install sshpass
+       displayName: "Install sshpass"
+    #Install Azure collection using ansible-galaxy.
+     - bash: /home/AzDevOps/.local/bin/ansible-galaxy collection install azure.azcollection:1.13.0 # As pip installs the Ansible in /home/user name directory.
+    #- script: ansible-galaxy collection install azure.azcollection # As pip installs the Ansible in /home/user name directory.
+       displayName: "Install galaxy-collection"
+    #  displayName: "Above ansible-galaxy installation installs the requirements from azure collection`s requirements-azure.txt file"
+     - bash: sudo pip3 install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements-azure.txt 
+       displayName: "Install azure-requiremets"
+    #Below is required for Ansible module - Azure to be executed, this is forced to this version which is compatible with current setup  
+     - bash: sudo pip install cryptography==37.0.1
+       displayName: "Upgrade Cryptography"    
+    #Below is required for Ansible module - Azure to be executed, this is forced to this version which is compatible with current setup  
+     - bash: sudo pip install pyOpenSSL --upgrade 
+       displayName: "Upgrade pyopenssl"
+     - bash: sudo pip install msrestazure
+      #As ansible got installed in current user`s home directory, the commands are called as below  
+     - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Ansible/Roles/role_${{parameters.useCaseName}}/playbook.yml -e '${{convertToJson(parameters.extraAnsibleVars)}}' -e "tenant='$(tenantId)' secret='$(clientPassword)' client_id='$(clientId)' usr_name='$(serviceAccountUser)@MGROUPNET.COM' usr_value='$(serviceAccountPass)' rhelTempRootUser='$(rhelTempRootUser)' rhelTempRootPass='$(rhelTempRootPass)'" -vvv
+       displayName: "Calling Ansible Playbook"
+
+     - script: sleep 1m
+       displayName: "Waiting for completing Global Pipeline jobs"  
+       condition: always()        
+    
+     - task: PowerShell@2
+       name: 'callpipeline'
+       displayName: 'Run Power BI pipeline'
+       env:
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+       inputs:
+         targetType: filePath
+         filePath: ./callPipeline.ps1
+         arguments: >
+          -runId "$(Build.BuildId)" -Pat "$(IaCADOsvcPAT)"
+       condition: always()
+
+
+VM Provisioning (Pipeline file)
+# This pipeline is specific for the VM Provisioning use cases. For this use case, it has few pre-requisites installed apart from Ansible
+# We would first install the Ansible and then install Ansible collections for Azure.
+######################################################################################################################################
+parameters:
+- name: extraAnsibleVars
+  type: object
+- name: useCaseName
+  type: string
+- name: agentPool
+  type: string 
+- name: ansibleVersion
+  type: string
+- name: connectedServiceName
+  type: string
+- name: keyVaultName
+  type: string
+- name: environment
+  type: string
+
+  
+
+stages:
+- stage: "Azure_VM_Provisioning"
+  jobs:
+  - job: "Install_Ansible_Call_Playbook" 
+    pool: DDI-Prod-General-Linux-Pool
+    timeoutInMinutes: 240
+     
+    steps:
+     - script: |
+         echo "##vso[build.addbuildtag]Automation-${{parameters.useCaseName}}"
+         echo "##vso[build.addbuildtag]Project-$(System.TeamProject)"
+         echo "##vso[build.addbuildtag]AgentPool-${{ parameters.agentPool }}"
+         echo "##vso[build.addbuildtag]Technology-Ansible"
+         echo "##vso[build.addbuildtag]Requestor-${{convertToJson(parameters.extraAnsibleVars.requested_for)}}"
+       displayName: Add Pipeline Build Tags
+       condition: always()  
+
+     - script: pip install ansible==${{parameters.ansibleVersion}} 
+       displayName: "Install Ansible"
+        
+     - task: AzureKeyVault@2
+       name: 'getsecret'
+       displayName: 'Get secrets'
+       inputs:
+         connectedServiceName: ${{parameters.connectedServiceName}} 
+         KeyVaultName: prd-grn-roa-iac-kv
+         secretsFilter: 'IaCADOsvcPAT,tenantId,clientId,clientPassword,serviceAccountUser,serviceAccountPass,adUser,adPass,serviceNowUser,serviceNowPass,windowsTempAdminUser,windowsTempAdminPass,rhelTempRootPass,rhelTempRootUser,vcenterAdminUser,vcenterAdminPass,avtUser,avtPass,avtToken,IACAUTODASVCsvc,IACAUTODASVCPWD'
+         runAsPreJob: false
+
+     - bash: |
+          # Updating Ansible Config file
+          cat << "EOF" > ansible.cfg
+          [defaults]
+          host_key_checking = False
+          roles_path = ./roles:./galaxy-roles:./roles_internal
+          bin_ansible_callbacks = True
+          callback_whitelist = profile_tasks, timer,  profile_roles
+          [ssh_connection]
+          ssh_args = "-o ForwardAgent=yes -o ControlMaster=auto -o ControlPersist=60s"
+          EOF
+     - script: sudo apt-get install python-dev libkrb5-dev
+       displayName: "Install Kerberos libraries"
+     - script: pip install pywinrm
+       displayName: "Install WinRM module"
+     - script: pip install pypsexec 
+       displayName: "Install pypsexec module"
+     - script: pip install kerberos
+       displayName: "Install Kerberos module"
+     - script: sudo DEBIAN_FRONTEND=noninteractive apt-get -yq install krb5-user
+       displayName: "Installing Kerberos Authentication Pre-requisites"
+     - bash: |
+           # Updating Ansible Config file
+            sudo truncate -s 0 /etc/krb5.conf
+            sudo -- sh -c "cat << "EOF" > /etc/krb5.conf
+            [logging]
+                default = FILE:/var/log/krb5libs.log
+                kdc = FILE:/var/log/krb5kdc.log
+                admin_server = FILE:/var/log/kadmind.log
+            [libdefaults]
+            default_realm = MGROUPNET.COM
+
+            [realms]
+                   MGROUPNET.COM = {
+                            kdc = MPS1027.MGROUPNET.COM
+                            kdc = MPS1019.MGROUPNET.COM
+                            kdc = mps1012.mgroupnet.com
+                            master_kdc = MPS1027.MGROUPNET.COM
+                            admin_server = MPS1019.MGROUPNET.COM
+                            default_domain = mgroupnet.com
+                   }
+            [domain_realm]
+                   mgroupnet.com = MGROUPNET.COM
+                   .mgroupnet.com = MGROUPNET.COM
+           EOF " 
+    # #Install Ansible Module for Azure 
+    #  - bash: sudo pip3 install ansible[azure]
+    #    displayName: "Install Ansible Azure using pip"
+    #Install Azure collection using ansible-galaxy.
+     - bash: | 
+            /home/AzDevOps/.local/bin/ansible-galaxy collection install azure.azcollection:1.13.0 # As pip installs the Ansible in /home/user name directory.
+            cat /home/AzDevOps/.ansible/collections/ansible_collections/azure/azcollection/plugins/modules/azure_rm_virtualmachine.py
+    #Install ansible windows collection
+     - bash: | 
+            /home/AzDevOps/.local/bin/ansible-galaxy collection install ansible.windows:1.11.1
+    #- script: ansible-galaxy collection install azure.azcollection # As pip installs the Ansible in /home/user name directory.
+       displayName: "Install galaxy-collection"
+    #  displayName: "Above ansible-galaxy installation installs the requirements from azure collection`s requirements-azure.txt file"
+     - bash:  |
+        cat ~/.ansible/collections/ansible_collections/azure/azcollection/requirements-azure.txt
+        sudo pip3 install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements-azure.txt 
+       displayName: "Install azure-requiremets"
+     - script: sudo apt install sshpass
+       displayName: "Install sshpass"
+    #Below is required for Ansible module - Azure to be executed, this is forced to this version which is compatible with current setup  
+     - bash: sudo pip install cryptography==37.0.1
+       displayName: "Upgrade Cryptography"    
+    #Below is required for Ansible module - Azure to be executed, this is forced to this version which is compatible with current setup  
+     - bash: sudo pip install pyOpenSSL --upgrade 
+       displayName: "Upgrade pyopenssl"
+     - bash: | 
+         sudo pip install msrestazure
+         pip3 install azure-identity
+         pip3 install azure-mgmt-common 0.20.0
+         pip3 install azure-mgmt-compute==4.6.2
+         sudo -- sh -c 'echo "inventory = /home/AzDevOps/.local/bin/hosts" >> /agent/_work/1/s/ansible.cfg'
+     - script: cat /agent/_work/1/s/ansible.cfg
+       displayName: "Print Config File"
+     - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Common/Roles/role_validate_user_extra_account/playbook.yml -e '${{ convertToJson(parameters.extraAnsibleVars)}}' -e "adUser='$(adUser)' adPass='$(adPass)' serviceNowUser='$(serviceNowUser)' serviceNowPass='$(serviceNowPass)' deployEnv='${{parameters.environment}}' ansible_python_interpreter=/usr/bin/python3" -vvv
+       displayName: "Calling Ansible Playbook for Extra Account Validation"
+     - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Ansible/Roles/role_hostname_vending_machine/playbook.yml -e '${{ convertToJson(parameters.extraAnsibleVars)}}' -e "usr_name='$(serviceAccountUser)@MGROUPNET.COM' usr_value='$(serviceAccountPass)' useCaseName=${{parameters.useCaseName}} tenant='$(tenantId)' secret='$(clientPassword)' client_id='$(clientId)'"  -e "vcenterAdmin='$(vcenterAdminUser)' vcenterAdminPass='$(vcenterAdminPass)'  serviceNowUser='$(serviceNowUser)' serviceNowPass='$(serviceNowPass)' build_num='$(Build.BuildNumber)' deployEnv='${{parameters.environment}}'"
+       displayName: "Calling Ansible Playbook for Hostname Generation"
+     - script: cat /home/AzDevOps/.local/bin/hosts
+       displayName: Print Hosts file
+     - script: |
+         vmname=$(cat /home/AzDevOps/.local/bin/hosts) 
+         echo "##vso[task.setvariable variable=vmhostname;]$vmname" 
+       displayName: Capture Hostname
+     - ${{ if eq(parameters.extraAnsibleVars.os_version, 'RedHat_8') }}:
+       - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Ansible/Roles/role_${{parameters.useCaseName}}/playbook.yml -i "/home/AzDevOps/.local/bin/hosts" -e '${{convertToJson(parameters.extraAnsibleVars)}}' -e "useCaseName=${{parameters.useCaseName}} tenantId='$(tenantId)' secret='$(clientPassword)' client_Id='$(clientId)' usr_name='$(serviceAccountUser)@MGROUPNET.COM' usr_value='$(serviceAccountPass)' win_temp_admin_user='$(windowsTempAdminUser)' win_temp_admin_pass='$(windowsTempAdminPass)' IACAUTODASVCPWD='$(IACAUTODASVCPWD)' IACAUTODASVCsvc='$(IACAUTODASVCsvc)' service_account_user='$(serviceAccountUser)' service_account_pass='$(serviceAccountPass)' adUser='$(adUser)' adPass='$(adPass)'" -e " serviceNowUser='$(serviceNowUser)' serviceNowPass='$(serviceNowPass)' build_num='$(Build.BuildNumber)' avt_username='$(avtUser)@MGROUPNET.COM' avt_password='$(avtPass)' avt_token='$(avtToken)' username='$(serviceNowUser)' pass='$(serviceNowPass)' rhelTempRootUser='$(rhelTempRootUser)' rhelTempRootPass='$(rhelTempRootPass)' ansible_python_interpreter=/usr/bin/python3 deployEnv='${{parameters.environment}}'" -vvvv 
+         displayName: "Calling Ansible Playbook for VM Provisioning"
+     - ${{ else }}:
+       - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Ansible/Roles/role_${{parameters.useCaseName}}/playbook.yml -i "/home/AzDevOps/.local/bin/hosts" -e '${{convertToJson(parameters.extraAnsibleVars)}}' -e "useCaseName=${{parameters.useCaseName}} tenantId='$(tenantId)' secret='$(clientPassword)' client_Id='$(clientId)' usr_name='$(serviceAccountUser)@MGROUPNET.COM' usr_value='$(serviceAccountPass)' win_temp_admin_user='$(windowsTempAdminUser)' win_temp_admin_pass='$(windowsTempAdminPass)' IACAUTODASVCPWD='$(IACAUTODASVCPWD)' IACAUTODASVCsvc='$(IACAUTODASVCsvc)' service_account_user='$(serviceAccountUser)' service_account_pass='$(serviceAccountPass)' adUser='$(adUser)' adPass='$(adPass)'" -e "serviceNowUser='$(serviceNowUser)' serviceNowPass='$(serviceNowPass)' build_num='$(Build.BuildNumber)' avt_username='$(avtUser)@MGROUPNET.COM' avt_password='$(avtPass)' avt_token='$(avtToken)' username='$(serviceNowUser)' pass='$(serviceNowPass)' rhelTempRootUser='$(rhelTempRootUser)' rhelTempRootPass='$(rhelTempRootPass)' ansible_python_interpreter=/usr/bin/python3 deployEnv='${{parameters.environment}}'" -vvvv
+         displayName: "Calling Ansible Playbook for VM Provisioning"
+
+     - script: sleep 1m
+       displayName: "Waiting for completing Global Pipeline jobs"  
+       condition: always()        
+    
+     - task: PowerShell@2
+       name: 'callpipeline'
+       displayName: 'Run Power BI pipeline'
+       env:
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+       inputs:
+         targetType: filePath
+         filePath: ./callPipeline.ps1
+         arguments: >
+          -runId "$(Build.BuildId)" -Pat "$(IaCADOsvcPAT)" -VMName "$(vmhostname)"
+       condition: always()
+
+VM Provisioning (Main.yml)
+---
+# Role: role_az_vm_provisioning
+# =========================================================================================
+# Developer:pscialdo@marathonpetroleum.com              11/29/2021              Version 1.0
+# Developer:YShetty@marathonpetroleum.com               11/15/2022              Version 2.0
+# Change History:
+
+#	Updated below details in meta/main.yml 
+#     - Role_name
+#     - Description
+#     - dependencies
+#     - min_ansible_version  
+#	Parameterized variable file based on cloudEnvironment
+# Updated Readme file with Role description and sample input
+
+
+# =========================================================================================
+- name: Set hostname
+  set_fact: 
+    hostname: "{{ inventory_hostname }}"
+
+- name: Copy Python module file 
+  copy:
+    src: ./files/azure_rm_virtualmachine.py
+    dest: /home/AzDevOps/.ansible/collections/ansible_collections/azure/azcollection/plugins/modules/
+    follow: yes 
+
+- name: Login
+  shell: |
+    export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
+    az login --identity
+    az account set --subscription {{ subscription_Id }}
+  delegate_to: localhost
+
+- name: Validate if resource group is present in the subscription
+  azure.azcollection.azure_rm_resourcegroup_info:
+    name: "{{ resource_group }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: status
+
+
+- name: Format SNOW comment
+  set_fact:
+     comment: "{{ { 'comments': 'The resource group {{ resource_group }} does not exist in subscription {{ subscription_Id }}' } }}"
+  when: status.resourcegroups | length == 0
+
+- name: Sending Post comment to SNOW when Resource Group does not exist
+  uri:
+    url: "{{environmentDetails[deployEnv].snow_env}}/api/now/table/sc_req_item/{{table_sys_id}}"
+    method: PUT
+    user: "{{serviceNowUser }}"
+    password: "{{serviceNowPass}}"
+    force_basic_auth: yes
+    body: "{{ comment }}"
+    body_format: json
+    return_content: yes
+    validate_certs: yes
+    timeout: 120
+  register: response
+  delegate_to: localhost
+  when: comment is defined
+
+- name: Fail the pipeline if rg is not found in the given subscription
+  fail:
+     msg: "The resource group {{ resource_group }} does not exist in subscription {{ subscription_Id }}"
+  when: comment is defined
+
+
+
+# Commented the below block for future reference
+# - name: Create an availability set with advanced options
+#   azure.azcollection.azure_rm_availabilityset:
+#     name: "{{ groups['all'] | map('extract', hostvars, ['inventory_hostname']) | join('-') }}"
+#     location: "{{ azure_location }}"
+#     resource_group: "{{ resource_group }}"
+#     platform_update_domain_count: 5
+#     platform_fault_domain_count: 3
+#     sku: Aligned
+#     tenant: "{{ tenantId }}"
+#     secret: "{{ secret }}"
+#     subscription_id: "{{ subscription_id }}"
+#     client_id: "{{ client_id }}"
+#     cert_validation_mode: ignore
+#   when: availability_set
+
+- name: Set additional tags
+  set_fact:
+    Additional_tags:
+      - Deployed_Date: "{{ '%Y-%m-%d' | strftime(ansible_facts.date_time.epoch | int - 18000 ) }}"
+      - Deployed_By: "IaC"
+
+- name: Set deployment date
+  set_fact:
+    Tags: "{{ vm_tags | combine(Additional_tags) }}"
+
+- name: Set Zone value as 1
+  set_fact:
+    zone: "1"
+  when: availability_zone == "Zone 1"
+
+- name: Set Zone value as 2
+  set_fact:
+    zone: "2"
+  when: availability_zone == "Zone 2"
+
+- name: Set Zone value as 3
+  set_fact:
+    zone: "3"
+  when: availability_zone == "Zone 3"  
+
+- name: Get ASG type based on os type
+  set_fact:
+    asg_name: "{{ azure_asg_windows }}"
+  when:
+    - '"Windows" in os'
+
+- name: Get ASG type based on os type
+  set_fact:
+    asg_name: "{{ azure_asg_linux }}"
+  when:
+    - '"RedHat" in os'
+
+- name: Set connection based on os type
+  set_fact:
+    ansible_connection: "winrm"
+  when:
+    - '"Windows" in os'
+
+- name: Set connection based on os type
+  set_fact:
+    ansible_connection: "ssh"
+  when:
+    - '"RedHat" in os'
+
+- name: use default size if not provided
+  set_fact:
+    size: "{{ default_size }}"
+  when: size == ""
+
+# - name: Set License Type for Windows
+#   set_fact:
+#     license: "Windows_Server"
+#   when:
+#     - '"Windows" in os'
+
+# - name: Set License Type for Linux
+#   set_fact:
+#     license: "RHEL_BYOS" # Value for Linux "RHEL_BYOS"
+#   when:
+#     - '"RedHat" in os'
+
+- name: Create a network interface
+  azure.azcollection.azure_rm_networkinterface:
+    name: "{{ hostname }}-private-iac"
+    resource_group: "{{ item.az_network_rg }}"
+    virtual_network: "{{ vnet }}"
+    subnet_name: "{{ item.subnetID }}"
+    tags: "{{ Tags }}"
+    ip_configurations:
+      - name: default
+        primary: True
+        application_security_groups: "{{  asg_name  }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+    create_with_security_group: false
+    security_group: "{{ item.az_network_sg }}"
+    dns_servers: "{{ dns_servers }}"
+  register: az_interface_result
+  delegate_to: localhost
+  loop: "{{ az_interface }}"
+
+
+- name: Get ASG type based on os type
+  debug:
+    msg: "{{ az_interface_result }}"
+ 
+
+- name: Capture interface ID
+  set_fact:
+     az_interface_id="{{ item.state.id }}"
+     private_ip="{{ item.state.ip_configurations[0].private_ip_address }}"
+     mgmt_nic="{{ item.state.ip_configurations[0].private_ip_address }}"
+     az_network_rg="{{ item.state.ip_configurations[0].subnet.resource_group }}"
+  loop: "{{ az_interface_result.results }}"
+
+- debug:
+   msg: "vars are {{ az_interface_id }} and {{ private_ip }}"
+
+- name: Capture image name
+  set_fact:
+    image: "{{ os_name[os_version] }}"
+
+- name: Create Windows VM with license type
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: "{{ resource_group }}"
+    name: "{{ hostname }}"
+    vm_size: "{{ size }}"
+    network_interfaces: "{{ az_interface_id }}"
+    virtual_network_name: "{{ vnet }}"
+    image: "{{ image }}"
+    tags: "{{ Tags }}"
+    managed_disk_type: "{{ disk_type }}"
+#    data_disks: "{{ disks }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    license_type: "Windows_Server"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: virtual_machine
+  delegate_to: localhost
+  when: 
+    - not availability_set 
+    - '"Windows" in os'
+    - availability_zone == "Automatic"
+
+- name: Create Windows VM with license type in availability zone 
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: "{{ resource_group }}"
+    name: "{{ hostname }}"
+    vm_size: "{{ size }}"
+    network_interfaces: "{{ az_interface_id }}"
+    virtual_network_name: "{{ vnet }}"
+    image: "{{ image }}"
+    tags: "{{ Tags }}"
+    managed_disk_type: "{{ disk_type }}"
+    zones: "{{ zone }}"
+#    data_disks: "{{ disks }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    license_type: "Windows_Server"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: virtual_machine
+  delegate_to: localhost
+  when: 
+    - not availability_set 
+    - '"Windows" in os'
+    - availability_zone != "Automatic"
+
+- name: Create Linux VM without license type
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: "{{ resource_group }}"
+    name: "{{ hostname }}"
+    vm_size: "{{ size }}"
+    network_interfaces: "{{ az_interface_id }}"
+    virtual_network_name: "{{ vnet }}"
+    image: "{{ image }}"
+    tags: "{{ Tags }}"
+    managed_disk_type: "{{ disk_type }}"
+#    data_disks: "{{ disks }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: virtual_machine
+  delegate_to: localhost
+  when: 
+    - not availability_set 
+    - '"RedHat" in os'
+    - availability_zone == "Automatic"
+
+- name: Create Linux VM without license type in availability zone 
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: "{{ resource_group }}"
+    name: "{{ hostname }}"
+    vm_size: "{{ size }}"
+    network_interfaces: "{{ az_interface_id }}"
+    virtual_network_name: "{{ vnet }}"
+    image: "{{ image }}"
+    tags: "{{ Tags }}"
+    managed_disk_type: "{{ disk_type }}"
+    zones: "{{ zone }}"
+#    data_disks: "{{ disks }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: virtual_machine
+  delegate_to: localhost
+  when: 
+    - not availability_set 
+    - '"RedHat" in os'
+    - availability_zone != "Automatic"
+
+- name: display fact
+  debug:
+    var: virtual_machine
+
+# Commented the below block for future reference
+# - name: Create VM in Availability Set
+#   azure.azcollection.azure_rm_virtualmachine:
+#     resource_group: "{{ resource_group }}"
+#     name: "{{ hostname }}"
+#     vm_size: "{{ size }}"
+#     network_interfaces: "{{ az_interface_id }}"
+#     virtual_network_name: "{{ vnet }}"
+# ##    virtual_network_resource_group: "{{ az_network_rg }}"
+#     image: "{{ image }}"
+#     tags: "{{ vm_tags }}"
+#     managed_disk_type: "{{ disk_type }}"
+#     availability_set: "{{ groups['all'] | map('extract', hostvars, ['inventory_hostname']) | join('-') }}"
+# #    data_disks: "{{ disks }}"
+#     tenant: "{{ tenantId }}"
+#     secret: "{{ secret }}"
+#     subscription_id: "{{ subscription_Id }}"
+#     client_id: "{{ client_Id }}"
+#     cert_validation_mode: "validate"
+#   register: virtual_machine
+#   when: availability_set
+#   delegate_to: localhost
+  
+- name: Modify Disk
+  azure.azcollection.azure_rm_manageddisk:
+    name: "{{ hostname }}-datadisk-{{ item.lun }}"
+    resource_group: "{{ resource_group }}"
+    disk_size_gb: "{{ item.disk_size_gb }}"
+    managed_by: "{{ hostname }}"
+    state: present
+    storage_account_type: "{{ item.managed_disk_type }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    tags: "{{ Tags }}"
+    cert_validation_mode: "validate"
+  delegate_to: localhost
+  loop: "{{ disks[1:] }}"
+  when: availability_zone == "Automatic"
+
+- name: Modify Disk for vm in availability zone
+  azure.azcollection.azure_rm_manageddisk:
+    name: "{{ hostname }}-datadisk-{{ item.lun }}"
+    resource_group: "{{ resource_group }}"
+    disk_size_gb: "{{ item.disk_size_gb }}"
+    managed_by: "{{ hostname }}"
+    zone: "{{ zone }}"
+    state: present
+    storage_account_type: "{{ item.managed_disk_type }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    tags: "{{ Tags }}"
+    cert_validation_mode: "validate"
+  delegate_to: localhost
+  loop: "{{ disks[1:] }}"
+  when: availability_zone != "Automatic"
+
+- name: Set ansible_host to private IP
+  set_fact:
+    ansible_host: "{{ private_ip }}"
+
+- name: Inventory Sources
+  debug:
+    msg: "{{ ansible_inventory_sources }}"
+
+- name: Add private IP to inventory file
+  lineinfile:
+    path: "{{ ansible_inventory_sources }}"
+    regexp: '^(.*){{ hostname }}(.*)$'
+    line: '{{ hostname }}    ansible_host={{ private_ip }}'
+    create: yes
+  delegate_to: localhost
+
+- name: Add private IP and FQDN to /etc/hosts - TEMPORARY
+  lineinfile:
+    path: /etc/hosts
+    line: '{{ private_ip }}  {{ hostname }}.{{ domainName }}'
+  delegate_to: localhost
+  become: yes
+
+- name: Windows VM - Set ansible_host to FQDN to get past proxy - TEMPORARY
+  set_fact:
+    ansible_host: "{{ hostname }}.{{ domainName }}"
+  when: 
+    - ansible_connection == 'winrm' #and cloudProvider == 'vSphere'
+
+- name: Print private IP
+  debug:
+    var: private_ip
+
+- name: Set private IP for SNOW Writeback Azure
+  set_fact:
+    ip_addr: "{{ private_ip }}"
+
+- name: Sleep for 120 seconds and continue with play
+  ansible.builtin.wait_for:
+    timeout: 120
+  delegate_to: localhost
+
+- name: set initial connection for Azure VMs
+  set_fact:
+    ansible_winrm_transport: ntlm
+    ansible_port: 5985
+    ansible_user: "{{ win_temp_admin_user }}"
+    ansible_password: "{{ win_temp_admin_pass }}"
+    ansible_winrm_server_cert_validation: 'ignore'
+  delegate_to: localhost
+  when: ansible_connection == 'winrm' and (cloudProvider is defined and cloudProvider == 'Azure')
+
+- name: set initial connection for Azure VMs
+  set_fact:
+    ansible_connection: ssh
+    host_key_checking: False
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no' 
+    ansible_port: 22
+    ansible_user: "{{ rhelTempRootUser }}"
+    ansible_password: "{{ rhelTempRootPass }}"
+  delegate_to: localhost
+  when: ansible_connection == 'ssh' and (cloudProvider is defined and cloudProvider == 'Azure')
+
+# Commented the below block for future reference
+# - name: Setup Ansible SSH
+#   include_role:
+#     name: configure_passwordless_ssh
+#   vars:
+#     remote_machine_username: "{{ ansible_user }}"
+#     remote_machine_password: "{{ ansible_password }}"
+#     my_ip: "{{ ansible_host }}"
+#   become: yes
+#   #when: hostvars[inventory_hostname]['ansible_connection'] == 'ssh'
+#   when: ansible_connection == 'ssh' and (cloudProvider is defined and cloudProvider == 'Azure')
+
+  
+- name: Print host
+  debug:
+    var: ansible_host
+
+- name: Print port
+  debug:
+    var: ansible_port
+
+- name: Wait for up to 30 min for connection - kdc and DNS
+  wait_for_connection:
+    timeout: 1800
+    delay: 1
+    sleep: 20
+  delegate_to: localhost
+
+- setup:
+    filter: ansible_os_family
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_distribution_major_version
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_distribution_version
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_distribution_release
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_date_time
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_kernel
+    gather_timeout: 300
+
+# Commented the below block for future reference
+  #  runs restart network handler at the end of the play
+  #       - name: configure nics
+  #         include_role:
+  #           name: configure_nics
+  #         vars:
+  #           networks: "{{ hostvars[inventory_hostname]['mgmt_nic'] + hostvars[inventory_hostname]['client_nics'] }}"       
+  #         when: cloudProvider is defined and cloudProvider == 'vSphere'
+
+#  - name: Execute if /etc/hosts exists
+#    block:
+#      - lineinfile:
+#          path: /etc/hosts
+#          regexp: '^127\.0\.1\.1'
+#          line: "127.0.1.1    {{ inventory_hostname }}.{{ domainName }} {{ inventory_hostname }}"
+#          state: present
+
+#       - lineinfile:
+#           path: /etc/hosts
+#           regexp: "^{{ item.ip }}"
+#           line: "{{ item.ip }}    {{ inventory_hostname }}.{{ domainName }} {{ inventory_hostname }}"
+#           state: present
+#    with_items: "{{ network_interfaces }}"
+#    become: yes
+#    when: ansible_os_family == 'RedHat' and cloudProvider == 'vSphere'
+#    ignore_errors: true
+
+- name: Change temporary disk drive letter from D to Z in Azure Windows
+  import_role:
+    name: ../Common/Roles/role_az_disk_new_letter_modify
+  #when: hostvars[inventory_hostname]['partitions'] is defined and (cloudProvider is defined and cloud)
+  when: 
+    - partitions is defined
+    - '"Windows" in os'
+  ignore_errors: yes
+
+- name: Run partition role
+  import_role:
+    name: ../Common/Roles/role_configure_partition
+  vars:
+    partitions: "{{ partitions }}"
+  when: 
+    - partitions is defined 
+
+- name: Run hostname and domain join for Azure Windows VMs. Delete entry in /etc/hosts     
+  include_role:
+    name: "{{ item }}"
+  with_items:
+    - ../Common/Roles/role_hostname_config
+    - ../Common/Roles/role_ad_domain_membership_config
+    #- ../Common/Roles/role_etc_hosts_config
+  when: ansible_connection == 'winrm' and (cloudProvider is defined and cloudProvider == 'Azure')
+
+Azure pipeline.yml
+############################################################################################################
+######################## DO NOT MODIFY ANYTHING UNDER THIS LINE ############################################
+############################################################################################################
+
+#### PARAMETERS ARE FOR DISPLAY IN PORTAL AND SELECTED AT RUN-TIME ####
+#### DO NOT CHANGE IN THIS FILE ####
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'IaC-Automation/IAC-Terraform-Pipeline-Templates'
+      ref: ${{ parameters.userTemplateBranch }}
+
+trigger: none
+
+parameters:
+
+  - name: 'tfAction'
+    displayName: 'Terraform action to take. Always plan and review before apply.'
+    type: string
+    default: 'Plan'
+    values:
+      - 'ShowState'
+      - 'Plan'
+      - 'Apply'
+      - 'Destroy'
+
+  - name: 'tfDestroy'
+    displayName: 'Confirm destroy: type yes to confirm destroy, otherwise leave no.'
+    type: string
+    default: 'no'
+
+  - name: 'planConfirm'
+    displayName: 'If selecting Apply, have you performed a Plan first and validated results? If not performing an Apply, leave this as no.'
+    type: string
+    values:
+      - 'yes'
+      - 'no'
+    default: 'no'
+
+  - name: userTemplateBranch
+    displayName: 'Branch of pipeline and deployment pipeline templates. Do not modify'
+    type: string
+    default: 'refs/heads/develop'
+    values:
+      - 'refs/tags/azure-deployment/0.2.0'
+      - 'refs/heads/features/iac-testing'
+      - 'refs/heads/develop'
+
+
+
+variables:
+  - template: ../variables/variables.yml 
+
+extends:
+  template: ../variables/params.yml
+  parameters:
+    tfAction: ${{ parameters.tfAction }}
+    tfDestroy: ${{ parameters.tfDestroy }}
+    planConfirm: ${{ parameters.planConfirm }}
+    userTemplateBranch: ${{ parameters.userTemplateBranch }}
+
+
+State file
+<#
+NOTE: This is to be run on Linux systems using Powershell core 7.x ONLY
+
+This script assumes there is an ADO PAT defined in an environmental variable called AZURE_DEVOPS_EXT_PAT and may also require AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
+Values can be determined by getting most recent fingerprint from the project / deployment in question
+
+EXAMPLE:
+  pwsh ./connectStateFiles.ps1 -resourceParam "law:1.2.0,naming:1.2.1,provider:2.0.1,global:current,modules:current" -encodedtfvars 'BASE64ENCODEDSTR' -contName "containerName" -tfVersion "1.1.4" -pathForArtifacts "/home/user/artifacts/tmp/"
+
+PARAMETERS:
+- resourceParam: This should come from the fingerprint results, it is a string with comma separated names and versions of resources, for instance "law:1.2.0,naming:1.2.1,provider:2.0.1,global:current,modules:current"
+- encodedtfvars: This is the complete string of the encoded tfvars file from the fingerprint, this can be retrieved from the fingerprint report. It may be very long and easier to set to a variable than in-line for running the script.
+- contName: Name of the storage container for the tfstate. This should be in the fingerprint report results. Example: "contname"
+- tfVersion: Version of terraform to use, in semantic versioning. Should be retreived from fingerprint report results. Example: "1.1.4"
+- pathForArtifacts: Full absolute path of an existing directory to where you want the file structure for this deployment to start in. This should be a fresh directory that will be deleted after you perform necessary actions. Example: "/home/user/artifacts/tmp/"
+#>
+
+param(
+    [Parameter(Mandatory=$true)][string]$resourceParam,
+    [Parameter(Mandatory=$true)][string]$encodedtfvars,
+    [Parameter(Mandatory=$true)][string]$contName,
+    [Parameter(Mandatory=$true)][string]$tfVersion,
+    [Parameter(Mandatory=$true)][string]$pathForArtifacts # absolute root path for where we're downloading the artifacts
+)
+
+$specialArtifacts = @("naming", "provider", "global", "modules") # have different name, may be "current" for version
+$deploymentPath = "resource-templates/terraform/current-deployment/templates/files/"
+
+if (!(Test-Path -Path "$pathForArtifacts")) {
+    Write-Host "pathForArtifacts $pathForArtifacts does not exist, exiting"
+    exit 1
+}
+
+# Get artifact names and also override exempt list
+$resources = ("$($resourceParam)").Split(',').Trim()
+$overrideExempt = @()
+$artifacts = @()
+foreach ($resource in $resources) {
+    $res = ("$($resource)").Split(':')[0]
+    $ver = ("$($resource)").Split(':')[1]
+    $overrideExempt += $res + "*"
+
+    # artifact names
+    if ($ver -eq "current") {
+        $artifactVersion = '*'
+    } else {
+        $artifactVersion = $ver
+    }
+
+    if ($specialArtifacts -contains $res) {
+        $artifactName = "$($res)-terraform-azure"
+    } else {
+        $artifactName = "$($res)-terraform-template-azure"
+    }
+
+    $artifact = [PSCustomObject]@{
+        name = $artifactName
+        version = $artifactVersion
+    }
+    $artifacts += $artifact
+}
+
+New-Item -Path "$pathForArtifacts" -Name $contName -ItemType Directory
+New-Item -Path "$pathForArtifacts" -Name "tfexecute" -ItemType Directory
+Set-Location -Path "$($pathForArtifacts)/$($contName)"
+
+try {
+    Invoke-WebRequest -uri "https://releases.hashicorp.com/terraform/$($tfVersion)/terraform_$($tfVersion)_linux_amd64.zip" -OutFile "$($pathForArtifacts)/tfexecute/terraform_$($tfVersion)_linux_amd64.zip" -SkipCertificateCheck
+} catch {
+    Write-Host "Unable to download terraform, exiting $_"
+    exit 1
+}
+Expand-Archive -Path "$($pathForArtifacts)/tfexecute/terraform_$($tfVersion)_linux_amd64.zip" -DestinationPath "$($pathForArtifacts)/tfexecute/"
+
+& chmod +x "$($pathForArtifacts)/tfexecute/terraform"
+
+# Now ready to download artifacts
+$ENV:no_proxy="$ENV:no_proxy,169.254.169.254" # Special IP required for the virtual machine's managed identity to authenticate
+
+try {
+    az login --identity
+    az extension add --name azure-devops -y
+} catch {
+    Write-Host "Unable to login to az or add azure-devops extension, exiting $_"
+    exit 1
+}
+
+foreach ($art in $artifacts) {
+    try {
+        az artifacts universal download --organization "https://marathonpetroleum.visualstudio.com/" --feed "MPC_Cloud_Templates" --name "$($art.name)" --version "$($art.version)" --path .
+    } catch {
+        Write-Host "Unable to download artifact for $($art.name), exiting $_"
+        exit 1
+    }
+}
+
+# Copy locals override files into deployment directory
+$overrideFiles = Get-Item -Path "$($pathForArtifacts)/$($contName)/resource-templates/terraform/current-deployment/templates/global/overrides/*" -Exclude $overrideExempt
+foreach ($file in $overrideFiles) {
+    Copy-Item -Path "$($file.FullName)" -Destination "$($pathForArtifacts)/$($contName)/$($deploymentPath)/"
+}
+Copy-Item -Path "$($pathForArtifacts)/$($contName)/resource-templates/terraform/current-deployment/templates/global/locals/*" -Destination "$($pathForArtifacts)/$($contName)/$($deploymentPath)/"
+
+# get tfvars decoded into file in deployment directory
+try {
+    [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encodedtfvars)) | Out-File -FilePath "$($pathForArtifacts)/$($contName)/$($deploymentPath)/terraform.tfvars" -Encoding utf8 -Force
+} catch {
+    Write-Host "Error decoding encoded tfvars or writing to file $($pathForArtifacts)/$($contName)/$($deploymentPath)/terraform.tfvars $_"
+    exit 1
+}
+
+Set-Location -Path "$($pathForArtifacts)/$($contName)/$($deploymentPath)"
+
+# Output syntax for terraform commands to run manually from directory now
+Write-Host "IMPORTANT: When Finished with the required operations, DELETE the deployment directory and its contents: $($pathForArtifacts)/$($contName) and $($pathForArtifacts)/tfexecute `n"
+Write-Host "The terraform executable file is located in $($pathForArtifacts)/tfexecute/terraform , which must be fully specified to successfully run these commands with the correct version of terraform`n"
+Write-Host "Files have been copied to deployment directory $($pathForArtifacts)/$($contName)/$($deploymentPath)/ `nFirst, to run terraform init, change to that directory and run this, replacing container name with the corresponding container name from fingerprint reference:`n"
+Write-Host "$($pathForArtifacts)/tfexecute/terraform" + ' init -backend-config=storage_account_name=mpcshsgrnroatfstatesa -backend-config=container_name=<containerNamefor specificDeployment> -backend-config=key=terraform.tfstate -backend-config=resource_group_name=shs-grn-roa-tf-state-rg -backend-config=subscription_id=693dabc8-5e22-4b66-94b4-1a73c305118f -backend-config=tenant_id=1640f4ce-86c6-44f2-a477-06bd39617e97 -backend-config=use_msi=true'
+Write-Host "`nNow you may run ad-hoc Terraform commands against this deployment state file`n`nIf you need to run a plan:"
+Write-Host "$($pathForArtifacts)/tfexecute/terraform plan -out=tfplan -detailed-exitcode -input=false -var=use_msi_azure=`"true`""
+
+
+Azure pipelines.yml
+trigger: none
+appendCommitMessageToRunName: off
+parameters:
+- name: useCaseName #Hold the name of the use case
+  type: string
+- name: payload #Hold the payload to be used for fulfilment
+  type: object
+- name: environment
+  type: string
+  values:
+    - Dev
+    - QA
+    - Prod
+
+variables:
+- template: ./pipeline-variables.yml
+
+stages:
+- template: ./Ansible/Roles/role_${{parameters.useCaseName}}/pipeline.yml
+  parameters:
+    extraAnsibleVars: "${{ parameters.payload }}"
+    useCaseName: "${{parameters.useCaseName}}"
+    agentPool: '$(${{ parameters.environment }}-agentPool)'
+    connectedServiceName: '$(${{ parameters.environment }}-connectedServiceName)'
+    keyVaultName: '$(${{ parameters.environment }}-KeyVaultName)'
+    ansibleVersion: '$(ansibleVersion)'
+    environment: "${{parameters.environment}}"
+
+Callpipeline.ps1
+param(
+    [Parameter(Mandatory=$true)][string]$runId,
+    [Parameter(Mandatory=$true)][string]$Pat,
+    [Parameter(Mandatory=$false)][string]$VMName = "NA"
+
+)
+$PAT = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$($Pat)"))
+
+$uri = "https://dev.azure.com/marathonpetroleum/IaC-Automation/_apis/pipelines/1195/runs?api-version=6.0-preview.1"
+$headers = @{Authorization = "Basic $PAT"}
+$body = @{
+    templateParameters = @{
+        runID = "$runId"
+        VMName = "$VMName"
+    }
+}
+$jsonBody = $body | ConvertTo-Json -Depth 100
+
+Write-Output "The json body is"
+$jsonBody
+try {
+    $pipelineResult = (Invoke-RestMethod -Uri "$uri" -Method POST -Headers $headers -Body $jsonBody -ContentType "application/json")
+} catch {
+    Write-Output "Error when attempting to start global pipeline"
+    $_
+    exit 1
+}
+
+$result = $pipelineResult | ConvertTo-Json -Depth 100
+
+$result
+
+insert_data.ps1
+param(
+    [Parameter(Mandatory=$true)][string]$runId,
+    [Parameter(Mandatory=$true)][string]$VMName,
+    [Parameter(Mandatory=$true)][string]$outputPath,
+    [Parameter(Mandatory=$true)][string]$cosmosAccount,
+    [Parameter(Mandatory=$true)][string]$resourceGroup,
+    [Parameter(Mandatory=$true)][string]$database
+)
+$requestTime = Get-Date -Format o
+$organization = "marathonpetroleum"
+$project = "IaC-Automation"
+
+# ## Form API request for fetching details from Global Pipeline
+
+$PAT = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$($env:SYSTEM_ACCESSTOKEN)"))
+$uri = "https://dev.azure.com/$($organization)/$($project)/_apis/build/builds/$($runId)?api-version=7.0"
+$headers = @{Authorization = "Basic $PAT"}
+
+$buildPipeline= Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+$useCase= $buildPipeline.templateParameters.useCaseName
+$payload = $buildPipeline.templateParameters.payload
+$Environment = $buildPipeline.templateParameters.environment
+$adoBuildId = $buildPipeline.buildNumber
+$buildStatus= $buildPipeline.status
+$BuildResult= $buildPipeline.result
+$buildstartTime= $buildPipeline.startTime
+$buildEndTime= $buildPipeline.finishTime
+$pipelineId = $buildPipeline.definition.id
+$pipelineName = $buildPipeline.definition.name
+$projectName = $buildPipeline.project.name
+$globalPipelineBranch = $buildPipeline.sourceBranch
+$pipelineRequestedFor = $buildPipeline.requesedBy.uniqueName
+$pipelineRequestor = $buildPipeline.requestedFor.uniqueName
+$pipelineRepo =$buildPipeline.repository.Name
+$tags = $buildPipeline.tags
+$requestId = "$($pipelineId)-$($runId)-$($adoBuildId)"
+$VMName = $VMName
+
+$vars = [PSCustomObject]@{
+    id = "$requestId"
+    useCase = "$useCase"
+    payload = "$payload"
+    environment = "$Environment"
+    adoBuildId = "$adoBuildId"
+    Status = "$buildStatus"
+    result = "$BuildResult"
+    requestTime = "$requestTime"
+    startTime = "$buildstartTime"
+    EndTime = "$buildEndTime"   
+    pipelineId = "$pipelineId"
+    pipelineName = "$pipelineName"
+    pipelineTemplateBranch = "$globalPipelineBranch"
+    project= "$projectName"
+    requestedForEmail = "$pipelineRequestedFor"
+    requestorEmail = "$pipelineRequestor"
+    repository = "$pipelineRepo"
+    runId = "$runId"
+    tags = "$tags"
+    VMName = $VMName
+}
+
+$jsonVars = $vars | ConvertTo-Json -Depth 100
+Write-Output "The json body is"
+$jsonVars
+Out-File -FilePath "$outputPath" -InputObject $jsonVars -Force
+Install-Module -Name Az -AllowClobber -force
+$subscription = "56a8c63e-1d91-4cc5-9307-efa8deaab797"
+Connect-AzAccount -Identity #Login into your azure account
+Set-AzContext -Subscription $subscription
+Install-Module -Name CosmosDB -AllowClobber -Scope CurrentUser -force 
+Import-Module -Name CosmosDB
+$cosmosDbContext = New-CosmosDBContext -Account $cosmosAccount -Database $database -ResourceGroup $resourceGroup 
+New-CosmosDBDocument -Context $cosmosDbContext -CollectionId 'iaciaas' -DocumentBody $jsonVars -PartitionKey "$requestId"
+
+StorageAccount-pipeline.yml
+trigger: none
+parameters:
+  - name: Storageaccount
+    type: string
+  - name: Resourcegroup
+    type: string
+
+pool: 'DDI-Prod-General-Linux-Pool'
+
+variables:
+- template: ./pipeline-variables.yml
+
+stages:
+- template: ./Ansible/Roles/role_az_storage_account/pipeline.yml
+  parameters:
+    Storageaccount: "${{ parameters.Storageaccount }}"
+    Resourcegroup: "${{ parameters.Resourcegroup }}"
+    useCaseName: "az_storage_account"
+    agentPool: '$(PROD-agentPool)'
+    connectedServiceName: '$(Prod-connectedServiceName)'
+    keyVaultName: '$(Prod-KeyVaultName)'
+    ansibleVersion: '$(ansibleVersion)'
+
+
+cmdb tags main.yml
+---
+# Role: role_az_cmdb_tags
+# ================================================================================================================================================================================
+# Change History:
+#	Updated below details in meta/main.yml 
+#     - Role_name
+#     - Description
+#     - dependencies
+#     - min_ansible_version  
+# Parameterized the variables
+#	Added pipeline.yml file as a template
+#	Added playbook.yml file to call role 
+# Updated readme file with role details and variables used
+# In this automation we are updating the tags and capturing known errors to handle them.
+# =======================================================================================
+
+# Loop through subscription IDs
+- name: Loop through subscription IDs
+  include_tasks: tags_update.yml
+  loop: "{{ subscription }}"
+  loop_control:
+    loop_var: sub_item
+  
+- name: Print File Contents
+  shell: cat /tmp/tags_update_{{ build_num }} | awk '!a[$0]++' | sed 's/^/- /'
+  register: file_data
+
+- name: Write file_data to a temporary file
+  copy:
+    content: "{{ file_data.stdout_lines | select('match', '^-.+') | map('regex_replace', '^-(.+)$', '\\1') | list | join('\n') }}"
+    dest: /tmp/output.txt
+  when: file_data.stdout_lines is defined and file_data.stdout_lines | length > 0
+
+- name: Display the contents of the temporary file
+  shell: cat /tmp/output.txt
+  register: file_display
+  when: file_data.stdout_lines is defined and file_data.stdout_lines | length > 0
+
+- name: Extract clean lines from file_data
+  set_fact:
+    allresources_list: "{{ file_display.stdout_lines | map('regex_replace', '\\[|\\]', '') | select('search', '\\S') | map('regex_replace', '\\n', '') | list }}"
+  when: file_data.stdout_lines is defined and file_data.stdout_lines | length > 0  
+
+- name: Extract clean lines from file_data
+  set_fact:
+    allresources: "{{ [] }}"
+  when: file_data.stdout_lines is defined and file_data.stdout_lines | length > 0
+
+- name: Populate allresources list
+  set_fact:
+    allresources: "{{ allresources + item.split(', ') }}"
+  loop: "{{ allresources_list }}"
+  when: item | regex_search('/subscriptions/') is not none
+
+- name: Print final resource list
+  debug:
+    var: allresources
+
+#Extracts the resource group names from the "allresources" list using regular expressions and stores them in the "resource_group_list" variable.
+- name: Extract Resource Group
+  set_fact:
+    resource_group_list: "{{ resource_group_list | default([]) + [item.split('resourceGroups/')[1].split('/')[0]] }}"
+  with_items: "{{ allresources }}"
+  when: allresources|default([]) != [] and allresources[0] != ""
+
+- name: Print Resource Group
+  debug:
+    var: resource_group_list 
+  when: allresources|default([]) != [] and allresources[0] != ""     
+
+#Uses Azure CLI commands to update the tags of each resource in the "allresources" list with the "result_tags" variable, it would skip the mrg & sqlPools resources
+- name: Updating az Tags
+  shell: |
+    az tag update --resource-id {{ item }} --operation Merge --tags {{ result_tags }}
+  delegate_to: localhost
+  when:
+    - item != ""
+    - '"-mrg" not in item'
+    - '"/sqlPools/" not in item'
+  with_items: "{{ allresources }}" 
+  ignore_errors: yes 
+  register: task_output
+
+- name: Display errors
+  debug:
+    msg: "{{ item.stderr }}" 
+  loop: "{{ task_output.results }}"
+  when: "'stderr' in item.keys()"
+
+- name: create error messages list
+  set_fact: 
+    error_list: "{{ error_list | default([]) + [item.stderr] }}"
+  with_items: "{{ task_output.results }}"
+  when: "'stderr' in item.keys()"
+
+- name: Set error_list if its undefined
+  set_fact: 
+    error_list: []
+  when: error_list is not defined
+
+- name: Debug error list
+  debug: 
+    var: error_list
+
+- name: Debug synapse items
+  debug: 
+    var: item 
+  when: 
+    - item != ""
+    - "'sqlPools' in item"
+    - '"-mrg" not in item'
+  with_items: "{{ allresources }}"  
+
+#To update synapse tags using the Azure CLI,it would only update tags of sqlPools resources
+- name: Updating synapse Tags 
+  shell: |
+    az synapse sql pool update --ids "{{ item }}" 
+  register: result 
+  delegate_to: localhost 
+  when: 
+    - item != ""
+    - "'sqlPools' in item"
+    - '"-mrg" not in item'
+  with_items: "{{ allresources }}"   
+  ignore_errors: yes
+  register: synapse_output
+
+- name: Display synapse resources errors 
+  debug:
+    msg: "{{ item.stderr }}"
+  loop: "{{ synapse_output.results }}"
+  when: "'stderr' in item.keys()"
+
+- name: create synapse resources errors list
+  set_fact:
+    Synapse_errors_list: "{{ Synapse_errors_list | default([]) + [item.stderr] }}"
+  loop: "{{ synapse_output.results }}"
+  when: "'stderr' in item.keys()"
+
+- name: Set synapse_errors_list if its undefined
+  set_fact: 
+    Synapse_errors_list: [] 
+  when: Synapse_errors_list is not defined 
+
+- name: Debug synapse errors list 
+  debug: 
+    var: Synapse_errors_list
+
+- name: create Combined list of errors list
+  set_fact: 
+    joint_list: "{{ error_list + Synapse_errors_list }}"
+  when: error_list | length != 0 or Synapse_errors_list | length != 0
+
+- name: Set joint_list if its undefined
+  set_fact: 
+    joint_list: [] 
+  when: joint_list is not defined   
+
+- name: Replace blank spaces with Successful keyword
+  set_fact: 
+    joint_list: "{{ joint_list | map('regex_replace', '^$', 'Successful') | list }}"
+  when: 
+    - joint_list | select('match', '^$') | list | length > 0 
+    - joint_list is defined  
+
+- name: debug joint list after replacement 
+  debug:
+    msg: "{{ joint_list }}" 
+  when: joint_list is defined   
+
+#extracts elements which are error-codes enclosed in parentheses from the joint_list and stores them in the final_list variable.
+- name: Set variable with elements enclosed in ( ) brackets
+  set_fact:
+    final_list: "{{ final_list | default([]) + [item | regex_search('\\(([^()]*)\\)')] }}"
+  loop: "{{ joint_list }}"
+  when: joint_list is defined
+
+- name: Trim error list
+  set_fact: 
+    final_list_clean: "{{ final_list | map('regex_replace', '[()]', '') | list }}"
+  when: final_list is defined
+
+- name: Set final_list_clean if its undefined
+  set_fact: 
+    final_list_clean: [] 
+  when: final_list_clean is not defined   
+
+- name: Replace none with Successful keyword 
+  set_fact: 
+    final_list_clean: "{{ final_list_clean | map('regex_replace', '^None', 'Successful') | list }}"
+  when: 
+    - final_list_clean | select('match', '^None') | list | length > 0
+    - final_list_clean is defined
+
+- name: Set final_list_clean_status1 if its undefined
+  set_fact: 
+    final_list_clean_status1: [] 
+  when: final_list_clean_status1 is not defined       
+
+- name: Replace error-codes with failure keyword
+  set_fact: 
+    final_list_clean_status1: "{{ final_list_clean | map('regex_replace', '^((?!Successful).)*$', 'Failure') | list }}"
+  when: 
+    - final_list_clean | select('match', '^((?!Successful).)*$') | list | length > 0 
+    - final_list_clean is defined 
+
+- name: Replace Successful with "NO errors" keyword
+  set_fact: 
+    final_list_clean: "{{ final_list_clean | map('regex_replace', '^Successful', 'No Errors') | list }}"
+  when: 
+    - final_list_clean | select('match', '^Successful') | list | length > 0
+    - final_list_clean is defined 
+
+- name: Print the final list
+  debug:
+    var: final_list_clean
+  when: final_list_clean is defined   
+
+- name: Skip errors
+  fail: 
+    msg: "Unknown error occurred"
+  when: 
+    - item != "Successful"
+    - item != "No Errors"
+    - item not in KnownError
+  loop: "{{ final_list_clean }}"    
+
+#Commented the block for future reference
+# - name: Fetch tags after update
+#   shell: |
+#     sleep 10
+#     az tag list --resource-id {{ item }}
+#   with_items: "{{ allresources }}"
+#   register: tags_after
+#   when: (allresources | length) != 0
+
+# - name: List Tags After Update
+#   debug: 
+#     msg: "{{ tags_after.results | json_query('[*].stdout_lines') }}"
+#   when: (allresources | length) != 0
+
+#Sets the "time" variable to the current date and time, this variable is passed aside the report .csv file name.
+- name: Set time
+  set_fact:
+    time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M') }}"  
+
+#This file is included to create an .csv file which contains report of the resources which are going to be updated, their RGs, their tag update status & error-codes if there are any
+- name: create CMDB tags report
+  include_tasks: table_template.yml
+
+#Commented the block for future reference
+# - name: Send email
+#   mail:
+#     host: "{{ smtpServer }}"
+#     port: "{{ smtpPort }}"
+#     subject: "CMDB Tags file."
+#     body: "Hi, \n
+
+#          Please find attached CMDB Tags report. \n
+
+#          Thanks
+#          "
+#     from: "{{ requested_by }}"
+#     to: "{{ requested_for }}"
+#     attach:
+#       - /tmp/Templates/CMDB_Tagsfile.csv
+#     charset: us-ascii
+#   delegate_to: localhost
+#   when: allresources|default([]) != [] and allresources[0] != ""
+
+- name: Upload  File to SNOW
+  shell: 
+         curl --location --request POST '{{ environmentDetails[deployEnv].snow_url }}' \
+         --user "{{ username }}":"{{ pass }}" \
+         --form 'table_name="sc_req_item"' \
+         --form 'table_sys_id="{{ ritm_sys_id }}"' \
+         --form 'file=@"/tmp/Templates/CMDB_Tagsfile_{{ time }}.csv"'
+  when:
+    - ritm is defined
+    - ritm_sys_id is defined
+  delegate_to: localhost
+
+- name: Removing .csv file
+  file:
+    path: /tmp/Templates/CMDB_Tagsfile_{{ time }}.csv
+    state: absent
+       
+##This would fail the pipeline only if an unknown error occurs, which is not in the errors list
+- name: Skip for known errors 
+  fail: 
+    msg: "Unknown error occurred"
+  when: 
+    - item != "Successful"
+    - item != "No Errors"
+    - item not in KnownError
+  loop: "{{ final_list_clean }}" 
+
+- name: Format SNOW comment
+  set_fact:
+    comment: "{{ { 'comments': 'No Resources exist with given AppID - {{ appid_value }} and AppSysID - {{ sysid_value }}' } }}"
+  when: (allresources | length) == 0
+
+- name: Format SNOW comment
+  set_fact:
+    comment: "{{ { 'comments': 'All the Resources has been successfully updated with the tag for given AppID - {{ appid_value }} and AppSysID - {{ sysid_value }}' } }}"
+  when: (allresources | length) != 0  
+
+- name: Sending Post comment to SNOW when Resources with given ID does not exist
+  uri:
+    url: "{{environmentDetails[deployEnv].snow_env}}/api/now/table/sc_req_item/{{ritm_sys_id}}"
+    method: PUT
+    user: "{{serviceNowUser }}"
+    password: "{{serviceNowPass}}"
+    force_basic_auth: yes
+    body: "{{ comment }}"
+    body_format: json
+    return_content: yes
+    validate_certs: yes
+    timeout: 120
+  register: response
+  delegate_to: localhost
+
+table_template.yml
+---
+- name: set facts
+  set_fact:
+    output_path: "/tmp/Templates"
+    filename: "CMDB_Tagsfile_{{ time }}.csv"
+
+- name: CSV - Create file and set the header
+  lineinfile:
+    dest: "{{ output_path }}/{{ filename }}"
+    line:
+      "Resource ID,Resource Group,CMDB tag operation update,Error"
+    create: yes
+    state: present
+  delegate_to: localhost
+
+#Extract all the details to .csv file, passing the list of vars created in the main.yml to have dynamic values in the columns
+- name: CSV - Get details
+  set_fact:
+    csv_tmp: |
+      {% for i in range(allresources|length) %}
+      {{ allresources[i] }},{{ resource_group_list[i] if i < resource_group_list|length else '' }},{{ final_list_clean_status1[i] if i < final_list_clean_status1|length else '' }},{{ final_list_clean[i] if i < final_list_clean|length else '' }}
+      {% endfor %}
+  when: allresources|default([]) != [] and allresources[0] != ""
+   
+- name: CSV - Write information into .csv file
+  lineinfile:
+    dest: "{{ output_path }}/{{ filename }}"
+    line: "{{ item }}"
+  with_items: 
+   - "{{ csv_tmp }}"  
+  when: allresources|default([]) != [] and allresources[0] != ""
+ 
+
+tags_update.yml
+# ---
+# # Role: role_az_cmdb_tags
+# # ================================================================================================================================================================================
+# # Change History:
+# #	Updated below details in meta/main.yml 
+# #     - Role_name
+# #     - Description
+# #     - dependencies
+# #     - min_ansible_version  
+# # Parameterized the variables
+# #	Added pipeline.yml file as a template
+# #	Added playbook.yml file to call role 
+# # Updated readme file with role details and variables used
+# # In this automation we are updating the tags and capturing known errors to handle them.
+# # =======================================================================================
+
+- name: Login & set subscriptions
+  shell: |
+    export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
+    az login --identity
+    az account list --query "[?isDefault]"  
+    az account set --subscription {{ sub_item }}
+    subscriptionId="$(az account list --query "[?isDefault].id" -o tsv)"
+    echo $subscriptionId
+  register: val1
+  # delegate_to: localhost
+
+- name: Login & list azure accounts
+  shell: |
+    az account list 
+  register: Sids
+#delegate_to: localhost
+
+#Prints the information about azure accounts.
+- name: Print Actual 
+  debug: 
+    msg: "{{ Sids }}"
+
+- name: save the Json data to a Variable as a Fact
+  set_fact:
+    jsondata: "{{ resource_tags }}"
+
+- name: Print Actual data
+  debug: 
+    msg: "{{ jsondata }}"
+
+- name: Initialize Tags variable
+  set_fact:
+    tags: ""
+
+- name: Set Tags
+  set_fact:
+    tags: "{{ tags }} '{{ item.key }}'='{{ item.value }}'"
+  loop: "{{ jsondata | dict2items }}"
+
+- name: Trim Data
+  set_fact:
+    result_tags: "{{ tags | trim }}"
+
+- name: set AppID value
+  set_fact:
+    appid_value: "{{ jsondata | json_query(jmesquery) }}"
+  vars:
+    jmesquery: 'AppID'
+
+- name: Value of AppID
+  debug: 
+    msg: "{{ appid_value }}"
+
+- name: set SysID value
+  set_fact:
+    sysid_value: "{{ jsondata | json_query(jmesquery) }}"
+  vars:
+    jmesquery: 'AppSysID'
+
+- name: Value of AppSysID
+  debug: 
+    msg: "{{ sysid_value }}"
+
+#to fetch a list of resources that have either the "AppID" or "AppSysID" tag matching the values stored in "appid_value" and "sysid_value". 
+- name: Fetching list of resources from subscription
+  shell: |
+    az group list --query  "[?tags.AppID == '{{ appid_value }}' || tags.AppSysID == '{{ sysid_value }}' || tags.AppId == '{{ appid_value }}']" | grep -w id | awk -F: '{print $2 }' | sed 's|[ \",]||g'
+    az resource list --query  "[?tags.AppID == '{{ appid_value }}' || tags.AppId == '{{ appid_value }}'|| tags.AppSysID == '{{ sysid_value }}']" | grep -w id | awk -F: '{print $2 }' | sed 's|[ \",]||g'
+  register: resources
+  delegate_to: localhost
+
+# Write resource id's to file
+- name: Write resource id's to file
+  shell: echo {{ resources.stdout_lines }} >> /tmp/tags_update_{{ build_num }}
+
+# Debug the resource id's
+- name: Print the resource id's
+  debug:
+    msg: "{{ resources.stdout_lines }}"
+
+# Print the contents to file
+- name: Print File Contents
+  shell: cat /tmp/tags_update_{{ build_num }} 
