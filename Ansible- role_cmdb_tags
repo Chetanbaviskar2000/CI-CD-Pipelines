@@ -1,1 +1,458 @@
-#Developer - Chetan baviskar 
+# Role: role_az_cmdb_tags
+# ================================================================================================================================================================================
+# Developer / Enhanced by:Chetan baviskar        2/3/2023    Version 2.0
+# Change History:
+#	Updated below details in meta/main.yml 
+#     - Role_name
+#     - Description
+#     - dependencies
+#     - min_ansible_version  
+# Parameterized the variables
+#	Added pipeline.yml file as a template
+#	Added playbook.yml file to call role 
+# Updated readme file with role details and variables used
+# In this automation we are updating the tags and capturing known errors to handle them.
+# =======================================================================================
+
+# Loop through subscription IDs
+- name: Loop through subscription IDs
+  include_tasks: tags_update.yml
+  loop: "{{ subscription }}"
+  loop_control:
+    loop_var: sub_item
+  
+- name: Print File Contents
+  shell: cat /tmp/tags_update_{{ build_num }} | awk '!a[$0]++' | sed 's/^/- /'
+  register: file_data
+
+- name: Write file_data to a temporary file
+  copy:
+    content: "{{ file_data.stdout_lines | select('match', '^-.+') | map('regex_replace', '^-(.+)$', '\\1') | list | join('\n') }}"
+    dest: /tmp/output.txt
+  when: file_data.stdout_lines is defined and file_data.stdout_lines | length > 0
+
+- name: Display the contents of the temporary file
+  shell: cat /tmp/output.txt
+  register: file_display
+  when: file_data.stdout_lines is defined and file_data.stdout_lines | length > 0
+
+- name: Extract clean lines from file_data
+  set_fact:
+    allresources_list: "{{ file_display.stdout_lines | map('regex_replace', '\\[|\\]', '') | select('search', '\\S') | map('regex_replace', '\\n', '') | list }}"
+  when: file_data.stdout_lines is defined and file_data.stdout_lines | length > 0  
+
+- name: Extract clean lines from file_data
+  set_fact:
+    allresources: "{{ [] }}"
+  when: file_data.stdout_lines is defined and file_data.stdout_lines | length > 0
+
+- name: Populate allresources list
+  set_fact:
+    allresources: "{{ allresources + item.split(', ') }}"
+  loop: "{{ allresources_list }}"
+  when: item | regex_search('/subscriptions/') is not none
+
+- name: Print final resource list
+  debug:
+    var: allresources
+
+#Extracts the resource group names from the "allresources" list using regular expressions and stores them in the "resource_group_list" variable.
+- name: Extract Resource Group
+  set_fact:
+    resource_group_list: "{{ resource_group_list | default([]) + [item.split('resourceGroups/')[1].split('/')[0]] }}"
+  with_items: "{{ allresources }}"
+  when: allresources|default([]) != [] and allresources[0] != ""
+
+- name: Print Resource Group
+  debug:
+    var: resource_group_list 
+  when: allresources|default([]) != [] and allresources[0] != ""     
+
+#Uses Azure CLI commands to update the tags of each resource in the "allresources" list with the "result_tags" variable, it would skip the mrg & sqlPools resources
+- name: Updating az Tags
+  shell: |
+    az tag update --resource-id {{ item }} --operation Merge --tags {{ result_tags }}
+  delegate_to: localhost
+  when:
+    - item != ""
+    - '"-mrg" not in item'
+    - '"/sqlPools/" not in item'
+  with_items: "{{ allresources }}" 
+  ignore_errors: yes 
+  register: task_output
+
+- name: Display errors
+  debug:
+    msg: "{{ item.stderr }}" 
+  loop: "{{ task_output.results }}"
+  when: "'stderr' in item.keys()"
+
+- name: create error messages list
+  set_fact: 
+    error_list: "{{ error_list | default([]) + [item.stderr] }}"
+  with_items: "{{ task_output.results }}"
+  when: "'stderr' in item.keys()"
+
+- name: Set error_list if its undefined
+  set_fact: 
+    error_list: []
+  when: error_list is not defined
+
+- name: Debug error list
+  debug: 
+    var: error_list
+
+- name: Debug synapse items
+  debug: 
+    var: item 
+  when: 
+    - item != ""
+    - "'sqlPools' in item"
+    - '"-mrg" not in item'
+  with_items: "{{ allresources }}"  
+
+#To update synapse tags using the Azure CLI,it would only update tags of sqlPools resources
+- name: Updating synapse Tags 
+  shell: |
+    az synapse sql pool update --ids "{{ item }}" 
+  register: result 
+  delegate_to: localhost 
+  when: 
+    - item != ""
+    - "'sqlPools' in item"
+    - '"-mrg" not in item'
+  with_items: "{{ allresources }}"   
+  ignore_errors: yes
+  register: synapse_output
+
+- name: Display synapse resources errors 
+  debug:
+    msg: "{{ item.stderr }}"
+  loop: "{{ synapse_output.results }}"
+  when: "'stderr' in item.keys()"
+
+- name: create synapse resources errors list
+  set_fact:
+    Synapse_errors_list: "{{ Synapse_errors_list | default([]) + [item.stderr] }}"
+  loop: "{{ synapse_output.results }}"
+  when: "'stderr' in item.keys()"
+
+- name: Set synapse_errors_list if its undefined
+  set_fact: 
+    Synapse_errors_list: [] 
+  when: Synapse_errors_list is not defined 
+
+- name: Debug synapse errors list 
+  debug: 
+    var: Synapse_errors_list
+
+- name: create Combined list of errors list
+  set_fact: 
+    joint_list: "{{ error_list + Synapse_errors_list }}"
+  when: error_list | length != 0 or Synapse_errors_list | length != 0
+
+- name: Set joint_list if its undefined
+  set_fact: 
+    joint_list: [] 
+  when: joint_list is not defined   
+
+- name: Replace blank spaces with Successful keyword
+  set_fact: 
+    joint_list: "{{ joint_list | map('regex_replace', '^$', 'Successful') | list }}"
+  when: 
+    - joint_list | select('match', '^$') | list | length > 0 
+    - joint_list is defined  
+
+- name: debug joint list after replacement 
+  debug:
+    msg: "{{ joint_list }}" 
+  when: joint_list is defined   
+
+#extracts elements which are error-codes enclosed in parentheses from the joint_list and stores them in the final_list variable.
+- name: Set variable with elements enclosed in ( ) brackets
+  set_fact:
+    final_list: "{{ final_list | default([]) + [item | regex_search('\\(([^()]*)\\)')] }}"
+  loop: "{{ joint_list }}"
+  when: joint_list is defined
+
+- name: Trim error list
+  set_fact: 
+    final_list_clean: "{{ final_list | map('regex_replace', '[()]', '') | list }}"
+  when: final_list is defined
+
+- name: Set final_list_clean if its undefined
+  set_fact: 
+    final_list_clean: [] 
+  when: final_list_clean is not defined   
+
+- name: Replace none with Successful keyword 
+  set_fact: 
+    final_list_clean: "{{ final_list_clean | map('regex_replace', '^None', 'Successful') | list }}"
+  when: 
+    - final_list_clean | select('match', '^None') | list | length > 0
+    - final_list_clean is defined
+
+- name: Set final_list_clean_status1 if its undefined
+  set_fact: 
+    final_list_clean_status1: [] 
+  when: final_list_clean_status1 is not defined       
+
+- name: Replace error-codes with failure keyword
+  set_fact: 
+    final_list_clean_status1: "{{ final_list_clean | map('regex_replace', '^((?!Successful).)*$', 'Failure') | list }}"
+  when: 
+    - final_list_clean | select('match', '^((?!Successful).)*$') | list | length > 0 
+    - final_list_clean is defined 
+
+- name: Replace Successful with "NO errors" keyword
+  set_fact: 
+    final_list_clean: "{{ final_list_clean | map('regex_replace', '^Successful', 'No Errors') | list }}"
+  when: 
+    - final_list_clean | select('match', '^Successful') | list | length > 0
+    - final_list_clean is defined 
+
+- name: Print the final list
+  debug:
+    var: final_list_clean
+  when: final_list_clean is defined   
+
+- name: Skip errors
+  fail: 
+    msg: "Unknown error occurred"
+  when: 
+    - item != "Successful"
+    - item != "No Errors"
+    - item not in KnownError
+  loop: "{{ final_list_clean }}"    
+
+#Commented the block for future reference
+# - name: Fetch tags after update
+#   shell: |
+#     sleep 10
+#     az tag list --resource-id {{ item }}
+#   with_items: "{{ allresources }}"
+#   register: tags_after
+#   when: (allresources | length) != 0
+
+# - name: List Tags After Update
+#   debug: 
+#     msg: "{{ tags_after.results | json_query('[*].stdout_lines') }}"
+#   when: (allresources | length) != 0
+
+#Sets the "time" variable to the current date and time, this variable is passed aside the report .csv file name.
+- name: Set time
+  set_fact:
+    time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M') }}"  
+
+#This file is included to create an .csv file which contains report of the resources which are going to be updated, their RGs, their tag update status & error-codes if there are any
+- name: create CMDB tags report
+  include_tasks: table_template.yml
+
+#Commented the block for future reference
+# - name: Send email
+#   mail:
+#     host: "{{ smtpServer }}"
+#     port: "{{ smtpPort }}"
+#     subject: "CMDB Tags file."
+#     body: "Hi, \n
+
+#          Please find attached CMDB Tags report. \n
+
+#          Thanks
+#          "
+#     from: "{{ requested_by }}"
+#     to: "{{ requested_for }}"
+#     attach:
+#       - /tmp/Templates/CMDB_Tagsfile.csv
+#     charset: us-ascii
+#   delegate_to: localhost
+#   when: allresources|default([]) != [] and allresources[0] != ""
+
+- name: Upload  File to SNOW
+  shell: 
+         curl --location --request POST '{{ environmentDetails[deployEnv].snow_url }}' \
+         --user "{{ username }}":"{{ pass }}" \
+         --form 'table_name="sc_req_item"' \
+         --form 'table_sys_id="{{ ritm_sys_id }}"' \
+         --form 'file=@"/tmp/Templates/CMDB_Tagsfile_{{ time }}.csv"'
+  when:
+    - ritm is defined
+    - ritm_sys_id is defined
+  delegate_to: localhost
+
+- name: Removing .csv file
+  file:
+    path: /tmp/Templates/CMDB_Tagsfile_{{ time }}.csv
+    state: absent
+       
+##This would fail the pipeline only if an unknown error occurs, which is not in the errors list
+- name: Skip for known errors 
+  fail: 
+    msg: "Unknown error occurred"
+  when: 
+    - item != "Successful"
+    - item != "No Errors"
+    - item not in KnownError
+  loop: "{{ final_list_clean }}" 
+
+- name: Format SNOW comment
+  set_fact:
+    comment: "{{ { 'comments': 'No Resources exist with given AppID - {{ appid_value }} and AppSysID - {{ sysid_value }}' } }}"
+  when: (allresources | length) == 0
+
+- name: Format SNOW comment
+  set_fact:
+    comment: "{{ { 'comments': 'All the Resources has been successfully updated with the tag for given AppID - {{ appid_value }} and AppSysID - {{ sysid_value }}' } }}"
+  when: (allresources | length) != 0  
+
+- name: Sending Post comment to SNOW when Resources with given ID does not exist
+  uri:
+    url: "{{environmentDetails[deployEnv].snow_env}}/api/now/table/sc_req_item/{{ritm_sys_id}}"
+    method: PUT
+    user: "{{serviceNowUser }}"
+    password: "{{serviceNowPass}}"
+    force_basic_auth: yes
+    body: "{{ comment }}"
+    body_format: json
+    return_content: yes
+    validate_certs: yes
+    timeout: 120
+  register: response
+  delegate_to: localhost
+
+table_template.yml
+---
+- name: set facts
+  set_fact:
+    output_path: "/tmp/Templates"
+    filename: "CMDB_Tagsfile_{{ time }}.csv"
+
+- name: CSV - Create file and set the header
+  lineinfile:
+    dest: "{{ output_path }}/{{ filename }}"
+    line:
+      "Resource ID,Resource Group,CMDB tag operation update,Error"
+    create: yes
+    state: present
+  delegate_to: localhost
+
+#Extract all the details to .csv file, passing the list of vars created in the main.yml to have dynamic values in the columns
+- name: CSV - Get details
+  set_fact:
+    csv_tmp: |
+      {% for i in range(allresources|length) %}
+      {{ allresources[i] }},{{ resource_group_list[i] if i < resource_group_list|length else '' }},{{ final_list_clean_status1[i] if i < final_list_clean_status1|length else '' }},{{ final_list_clean[i] if i < final_list_clean|length else '' }}
+      {% endfor %}
+  when: allresources|default([]) != [] and allresources[0] != ""
+   
+- name: CSV - Write information into .csv file
+  lineinfile:
+    dest: "{{ output_path }}/{{ filename }}"
+    line: "{{ item }}"
+  with_items: 
+   - "{{ csv_tmp }}"  
+  when: allresources|default([]) != [] and allresources[0] != ""
+ 
+
+tags_update.yml
+# ---
+# # Role: role_az_cmdb_tags
+# # ================================================================================================================================================================================
+# # Developer / Enhanced by:IJogi@marathonpetroleum.com        2/3/2023    Version 2.0
+# # Change History:
+# #	Updated below details in meta/main.yml 
+# #     - Role_name
+# #     - Description
+# #     - dependencies
+# #     - min_ansible_version  
+# # Parameterized the variables
+# #	Added pipeline.yml file as a template
+# #	Added playbook.yml file to call role 
+# # Updated readme file with role details and variables used
+# # In this automation we are updating the tags and capturing known errors to handle them.
+# # =======================================================================================
+
+- name: Login & set subscriptions
+  shell: |
+    export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
+    az login --identity
+    az account list --query "[?isDefault]"  
+    az account set --subscription {{ sub_item }}
+    subscriptionId="$(az account list --query "[?isDefault].id" -o tsv)"
+    echo $subscriptionId
+  register: val1
+  # delegate_to: localhost
+
+- name: Login & list azure accounts
+  shell: |
+    az account list 
+  register: Sids
+#delegate_to: localhost
+
+#Prints the information about azure accounts.
+- name: Print Actual 
+  debug: 
+    msg: "{{ Sids }}"
+
+- name: save the Json data to a Variable as a Fact
+  set_fact:
+    jsondata: "{{ resource_tags }}"
+
+- name: Print Actual data
+  debug: 
+    msg: "{{ jsondata }}"
+
+- name: Initialize Tags variable
+  set_fact:
+    tags: ""
+
+- name: Set Tags
+  set_fact:
+    tags: "{{ tags }} '{{ item.key }}'='{{ item.value }}'"
+  loop: "{{ jsondata | dict2items }}"
+
+- name: Trim Data
+  set_fact:
+    result_tags: "{{ tags | trim }}"
+
+- name: set AppID value
+  set_fact:
+    appid_value: "{{ jsondata | json_query(jmesquery) }}"
+  vars:
+    jmesquery: 'AppID'
+
+- name: Value of AppID
+  debug: 
+    msg: "{{ appid_value }}"
+
+- name: set SysID value
+  set_fact:
+    sysid_value: "{{ jsondata | json_query(jmesquery) }}"
+  vars:
+    jmesquery: 'AppSysID'
+
+- name: Value of AppSysID
+  debug: 
+    msg: "{{ sysid_value }}"
+
+#to fetch a list of resources that have either the "AppID" or "AppSysID" tag matching the values stored in "appid_value" and "sysid_value". 
+- name: Fetching list of resources from subscription
+  shell: |
+    az group list --query  "[?tags.AppID == '{{ appid_value }}' || tags.AppSysID == '{{ sysid_value }}' || tags.AppId == '{{ appid_value }}']" | grep -w id | awk -F: '{print $2 }' | sed 's|[ \",]||g'
+    az resource list --query  "[?tags.AppID == '{{ appid_value }}' || tags.AppId == '{{ appid_value }}'|| tags.AppSysID == '{{ sysid_value }}']" | grep -w id | awk -F: '{print $2 }' | sed 's|[ \",]||g'
+  register: resources
+  delegate_to: localhost
+
+# Write resource id's to file
+- name: Write resource id's to file
+  shell: echo {{ resources.stdout_lines }} >> /tmp/tags_update_{{ build_num }}
+
+# Debug the resource id's
+- name: Print the resource id's
+  debug:
+    msg: "{{ resources.stdout_lines }}"
+
+# Print the contents to file
+- name: Print File Contents
+  shell: cat /tmp/tags_update_{{ build_num }} 
+
