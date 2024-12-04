@@ -1,0 +1,161 @@
+VM Provisioning (Pipeline file)
+# This pipeline is specific for the VM Provisioning use cases. For this use case, it has few pre-requisites installed apart from Ansible
+# We would first install the Ansible and then install Ansible collections for Azure.
+######################################################################################################################################
+parameters:
+- name: extraAnsibleVars
+  type: object
+- name: useCaseName
+  type: string
+- name: agentPool
+  type: string 
+- name: ansibleVersion
+  type: string
+- name: connectedServiceName
+  type: string
+- name: keyVaultName
+  type: string
+- name: environment
+  type: string
+
+  
+
+stages:
+- stage: "Azure_VM_Provisioning"
+  jobs:
+  - job: "Install_Ansible_Call_Playbook" 
+    pool: DDI-Prod-General-Linux-Pool
+    timeoutInMinutes: 240
+     
+    steps:
+     - script: |
+         echo "##vso[build.addbuildtag]Automation-${{parameters.useCaseName}}"
+         echo "##vso[build.addbuildtag]Project-$(System.TeamProject)"
+         echo "##vso[build.addbuildtag]AgentPool-${{ parameters.agentPool }}"
+         echo "##vso[build.addbuildtag]Technology-Ansible"
+         echo "##vso[build.addbuildtag]Requestor-${{convertToJson(parameters.extraAnsibleVars.requested_for)}}"
+       displayName: Add Pipeline Build Tags
+       condition: always()  
+
+     - script: pip install ansible==${{parameters.ansibleVersion}} 
+       displayName: "Install Ansible"
+        
+     - task: AzureKeyVault@2
+       name: 'getsecret'
+       displayName: 'Get secrets'
+       inputs:
+         connectedServiceName: ${{parameters.connectedServiceName}} 
+         KeyVaultName: prd-grn-roa-iac-kv
+         secretsFilter: 'IaCADOsvcPAT,tenantId,clientId,clientPassword,serviceAccountUser,serviceAccountPass,adUser,adPass,serviceNowUser,serviceNowPass,windowsTempAdminUser,windowsTempAdminPass,rhelTempRootPass,rhelTempRootUser,vcenterAdminUser,vcenterAdminPass,avtUser,avtPass,avtToken,IACAUTODASVCsvc,IACAUTODASVCPWD'
+         runAsPreJob: false
+
+     - bash: |
+          # Updating Ansible Config file
+          cat << "EOF" > ansible.cfg
+          [defaults]
+          host_key_checking = False
+          roles_path = ./roles:./galaxy-roles:./roles_internal
+          bin_ansible_callbacks = True
+          callback_whitelist = profile_tasks, timer,  profile_roles
+          [ssh_connection]
+          ssh_args = "-o ForwardAgent=yes -o ControlMaster=auto -o ControlPersist=60s"
+          EOF
+     - script: sudo apt-get install python-dev libkrb5-dev
+       displayName: "Install Kerberos libraries"
+     - script: pip install pywinrm
+       displayName: "Install WinRM module"
+     - script: pip install pypsexec 
+       displayName: "Install pypsexec module"
+     - script: pip install kerberos
+       displayName: "Install Kerberos module"
+     - script: sudo DEBIAN_FRONTEND=noninteractive apt-get -yq install krb5-user
+       displayName: "Installing Kerberos Authentication Pre-requisites"
+     - bash: |
+           # Updating Ansible Config file
+            sudo truncate -s 0 /etc/krb5.conf
+            sudo -- sh -c "cat << "EOF" > /etc/krb5.conf
+            [logging]
+                default = FILE:/var/log/krb5libs.log
+                kdc = FILE:/var/log/krb5kdc.log
+                admin_server = FILE:/var/log/kadmind.log
+            [libdefaults]
+            default_realm = MGROUPNET.COM
+
+            [realms]
+                   MGROUPNET.COM = {
+                            kdc = MPS1027.MGROUPNET.COM
+                            kdc = MPS1019.MGROUPNET.COM
+                            kdc = mps1012.mgroupnet.com
+                            master_kdc = MPS1027.MGROUPNET.COM
+                            admin_server = MPS1019.MGROUPNET.COM
+                            default_domain = mgroupnet.com
+                   }
+            [domain_realm]
+                   mgroupnet.com = MGROUPNET.COM
+                   .mgroupnet.com = MGROUPNET.COM
+           EOF " 
+    # #Install Ansible Module for Azure 
+    #  - bash: sudo pip3 install ansible[azure]
+    #    displayName: "Install Ansible Azure using pip"
+    #Install Azure collection using ansible-galaxy.
+     - bash: | 
+            /home/AzDevOps/.local/bin/ansible-galaxy collection install azure.azcollection:1.13.0 # As pip installs the Ansible in /home/user name directory.
+            cat /home/AzDevOps/.ansible/collections/ansible_collections/azure/azcollection/plugins/modules/azure_rm_virtualmachine.py
+    #Install ansible windows collection
+     - bash: | 
+            /home/AzDevOps/.local/bin/ansible-galaxy collection install ansible.windows:1.11.1
+    #- script: ansible-galaxy collection install azure.azcollection # As pip installs the Ansible in /home/user name directory.
+       displayName: "Install galaxy-collection"
+    #  displayName: "Above ansible-galaxy installation installs the requirements from azure collection`s requirements-azure.txt file"
+     - bash:  |
+        cat ~/.ansible/collections/ansible_collections/azure/azcollection/requirements-azure.txt
+        sudo pip3 install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements-azure.txt 
+       displayName: "Install azure-requiremets"
+     - script: sudo apt install sshpass
+       displayName: "Install sshpass"
+    #Below is required for Ansible module - Azure to be executed, this is forced to this version which is compatible with current setup  
+     - bash: sudo pip install cryptography==37.0.1
+       displayName: "Upgrade Cryptography"    
+    #Below is required for Ansible module - Azure to be executed, this is forced to this version which is compatible with current setup  
+     - bash: sudo pip install pyOpenSSL --upgrade 
+       displayName: "Upgrade pyopenssl"
+     - bash: | 
+         sudo pip install msrestazure
+         pip3 install azure-identity
+         pip3 install azure-mgmt-common 0.20.0
+         pip3 install azure-mgmt-compute==4.6.2
+         sudo -- sh -c 'echo "inventory = /home/AzDevOps/.local/bin/hosts" >> /agent/_work/1/s/ansible.cfg'
+     - script: cat /agent/_work/1/s/ansible.cfg
+       displayName: "Print Config File"
+     - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Common/Roles/role_validate_user_extra_account/playbook.yml -e '${{ convertToJson(parameters.extraAnsibleVars)}}' -e "adUser='$(adUser)' adPass='$(adPass)' serviceNowUser='$(serviceNowUser)' serviceNowPass='$(serviceNowPass)' deployEnv='${{parameters.environment}}' ansible_python_interpreter=/usr/bin/python3" -vvv
+       displayName: "Calling Ansible Playbook for Extra Account Validation"
+     - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Ansible/Roles/role_hostname_vending_machine/playbook.yml -e '${{ convertToJson(parameters.extraAnsibleVars)}}' -e "usr_name='$(serviceAccountUser)@MGROUPNET.COM' usr_value='$(serviceAccountPass)' useCaseName=${{parameters.useCaseName}} tenant='$(tenantId)' secret='$(clientPassword)' client_id='$(clientId)'"  -e "vcenterAdmin='$(vcenterAdminUser)' vcenterAdminPass='$(vcenterAdminPass)'  serviceNowUser='$(serviceNowUser)' serviceNowPass='$(serviceNowPass)' build_num='$(Build.BuildNumber)' deployEnv='${{parameters.environment}}'"
+       displayName: "Calling Ansible Playbook for Hostname Generation"
+     - script: cat /home/AzDevOps/.local/bin/hosts
+       displayName: Print Hosts file
+     - script: |
+         vmname=$(cat /home/AzDevOps/.local/bin/hosts) 
+         echo "##vso[task.setvariable variable=vmhostname;]$vmname" 
+       displayName: Capture Hostname
+     - ${{ if eq(parameters.extraAnsibleVars.os_version, 'RedHat_8') }}:
+       - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Ansible/Roles/role_${{parameters.useCaseName}}/playbook.yml -i "/home/AzDevOps/.local/bin/hosts" -e '${{convertToJson(parameters.extraAnsibleVars)}}' -e "useCaseName=${{parameters.useCaseName}} tenantId='$(tenantId)' secret='$(clientPassword)' client_Id='$(clientId)' usr_name='$(serviceAccountUser)@MGROUPNET.COM' usr_value='$(serviceAccountPass)' win_temp_admin_user='$(windowsTempAdminUser)' win_temp_admin_pass='$(windowsTempAdminPass)' IACAUTODASVCPWD='$(IACAUTODASVCPWD)' IACAUTODASVCsvc='$(IACAUTODASVCsvc)' service_account_user='$(serviceAccountUser)' service_account_pass='$(serviceAccountPass)' adUser='$(adUser)' adPass='$(adPass)'" -e " serviceNowUser='$(serviceNowUser)' serviceNowPass='$(serviceNowPass)' build_num='$(Build.BuildNumber)' avt_username='$(avtUser)@MGROUPNET.COM' avt_password='$(avtPass)' avt_token='$(avtToken)' username='$(serviceNowUser)' pass='$(serviceNowPass)' rhelTempRootUser='$(rhelTempRootUser)' rhelTempRootPass='$(rhelTempRootPass)' ansible_python_interpreter=/usr/bin/python3 deployEnv='${{parameters.environment}}'" -vvvv 
+         displayName: "Calling Ansible Playbook for VM Provisioning"
+     - ${{ else }}:
+       - bash: /home/AzDevOps/.local/bin/ansible-playbook ./Ansible/Roles/role_${{parameters.useCaseName}}/playbook.yml -i "/home/AzDevOps/.local/bin/hosts" -e '${{convertToJson(parameters.extraAnsibleVars)}}' -e "useCaseName=${{parameters.useCaseName}} tenantId='$(tenantId)' secret='$(clientPassword)' client_Id='$(clientId)' usr_name='$(serviceAccountUser)@MGROUPNET.COM' usr_value='$(serviceAccountPass)' win_temp_admin_user='$(windowsTempAdminUser)' win_temp_admin_pass='$(windowsTempAdminPass)' IACAUTODASVCPWD='$(IACAUTODASVCPWD)' IACAUTODASVCsvc='$(IACAUTODASVCsvc)' service_account_user='$(serviceAccountUser)' service_account_pass='$(serviceAccountPass)' adUser='$(adUser)' adPass='$(adPass)'" -e "serviceNowUser='$(serviceNowUser)' serviceNowPass='$(serviceNowPass)' build_num='$(Build.BuildNumber)' avt_username='$(avtUser)@MGROUPNET.COM' avt_password='$(avtPass)' avt_token='$(avtToken)' username='$(serviceNowUser)' pass='$(serviceNowPass)' rhelTempRootUser='$(rhelTempRootUser)' rhelTempRootPass='$(rhelTempRootPass)' ansible_python_interpreter=/usr/bin/python3 deployEnv='${{parameters.environment}}'" -vvvv
+         displayName: "Calling Ansible Playbook for VM Provisioning"
+
+     - script: sleep 1m
+       displayName: "Waiting for completing Global Pipeline jobs"  
+       condition: always()        
+    
+     - task: PowerShell@2
+       name: 'callpipeline'
+       displayName: 'Run Power BI pipeline'
+       env:
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+       inputs:
+         targetType: filePath
+         filePath: ./callPipeline.ps1
+         arguments: >
+          -runId "$(Build.BuildId)" -Pat "$(IaCADOsvcPAT)" -VMName "$(vmhostname)"
+       condition: always()
