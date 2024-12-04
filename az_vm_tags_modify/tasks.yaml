@@ -1,1 +1,509 @@
+- name: Set hostname
+  set_fact: 
+    hostname: "{{ inventory_hostname }}"
 
+- name: Copy Python module file 
+  copy:
+    src: ./files/azure_rm_virtualmachine.py
+    dest: /home/AzDevOps/.ansible/collections/ansible_collections/azure/azcollection/plugins/modules/
+    follow: yes 
+
+- name: Login
+  shell: |
+    export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
+    az login --identity
+    az account set --subscription {{ subscription_Id }}
+  delegate_to: localhost
+
+- name: Validate if resource group is present in the subscription
+  azure.azcollection.azure_rm_resourcegroup_info:
+    name: "{{ resource_group }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: status
+
+
+- name: Format SNOW comment
+  set_fact:
+     comment: "{{ { 'comments': 'The resource group {{ resource_group }} does not exist in subscription {{ subscription_Id }}' } }}"
+  when: status.resourcegroups | length == 0
+
+- name: Sending Post comment to SNOW when Resource Group does not exist
+  uri:
+    url: "{{environmentDetails[deployEnv].snow_env}}/api/now/table/sc_req_item/{{table_sys_id}}"
+    method: PUT
+    user: "{{serviceNowUser }}"
+    password: "{{serviceNowPass}}"
+    force_basic_auth: yes
+    body: "{{ comment }}"
+    body_format: json
+    return_content: yes
+    validate_certs: yes
+    timeout: 120
+  register: response
+  delegate_to: localhost
+  when: comment is defined
+
+- name: Fail the pipeline if rg is not found in the given subscription
+  fail:
+     msg: "The resource group {{ resource_group }} does not exist in subscription {{ subscription_Id }}"
+  when: comment is defined
+
+
+
+# Commented the below block for future reference
+# - name: Create an availability set with advanced options
+#   azure.azcollection.azure_rm_availabilityset:
+#     name: "{{ groups['all'] | map('extract', hostvars, ['inventory_hostname']) | join('-') }}"
+#     location: "{{ azure_location }}"
+#     resource_group: "{{ resource_group }}"
+#     platform_update_domain_count: 5
+#     platform_fault_domain_count: 3
+#     sku: Aligned
+#     tenant: "{{ tenantId }}"
+#     secret: "{{ secret }}"
+#     subscription_id: "{{ subscription_id }}"
+#     client_id: "{{ client_id }}"
+#     cert_validation_mode: ignore
+#   when: availability_set
+
+- name: Set additional tags
+  set_fact:
+    Additional_tags:
+      - Deployed_Date: "{{ '%Y-%m-%d' | strftime(ansible_facts.date_time.epoch | int - 18000 ) }}"
+      - Deployed_By: "IaC"
+
+- name: Set deployment date
+  set_fact:
+    Tags: "{{ vm_tags | combine(Additional_tags) }}"
+
+- name: Set Zone value as 1
+  set_fact:
+    zone: "1"
+  when: availability_zone == "Zone 1"
+
+- name: Set Zone value as 2
+  set_fact:
+    zone: "2"
+  when: availability_zone == "Zone 2"
+
+- name: Set Zone value as 3
+  set_fact:
+    zone: "3"
+  when: availability_zone == "Zone 3"  
+
+- name: Get ASG type based on os type
+  set_fact:
+    asg_name: "{{ azure_asg_windows }}"
+  when:
+    - '"Windows" in os'
+
+- name: Get ASG type based on os type
+  set_fact:
+    asg_name: "{{ azure_asg_linux }}"
+  when:
+    - '"RedHat" in os'
+
+- name: Set connection based on os type
+  set_fact:
+    ansible_connection: "winrm"
+  when:
+    - '"Windows" in os'
+
+- name: Set connection based on os type
+  set_fact:
+    ansible_connection: "ssh"
+  when:
+    - '"RedHat" in os'
+
+- name: use default size if not provided
+  set_fact:
+    size: "{{ default_size }}"
+  when: size == ""
+
+# - name: Set License Type for Windows
+#   set_fact:
+#     license: "Windows_Server"
+#   when:
+#     - '"Windows" in os'
+
+# - name: Set License Type for Linux
+#   set_fact:
+#     license: "RHEL_BYOS" # Value for Linux "RHEL_BYOS"
+#   when:
+#     - '"RedHat" in os'
+
+- name: Create a network interface
+  azure.azcollection.azure_rm_networkinterface:
+    name: "{{ hostname }}-private-iac"
+    resource_group: "{{ item.az_network_rg }}"
+    virtual_network: "{{ vnet }}"
+    subnet_name: "{{ item.subnetID }}"
+    tags: "{{ Tags }}"
+    ip_configurations:
+      - name: default
+        primary: True
+        application_security_groups: "{{  asg_name  }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+    create_with_security_group: false
+    security_group: "{{ item.az_network_sg }}"
+    dns_servers: "{{ dns_servers }}"
+  register: az_interface_result
+  delegate_to: localhost
+  loop: "{{ az_interface }}"
+
+
+- name: Get ASG type based on os type
+  debug:
+    msg: "{{ az_interface_result }}"
+ 
+
+- name: Capture interface ID
+  set_fact:
+     az_interface_id="{{ item.state.id }}"
+     private_ip="{{ item.state.ip_configurations[0].private_ip_address }}"
+     mgmt_nic="{{ item.state.ip_configurations[0].private_ip_address }}"
+     az_network_rg="{{ item.state.ip_configurations[0].subnet.resource_group }}"
+  loop: "{{ az_interface_result.results }}"
+
+- debug:
+   msg: "vars are {{ az_interface_id }} and {{ private_ip }}"
+
+- name: Capture image name
+  set_fact:
+    image: "{{ os_name[os_version] }}"
+
+- name: Create Windows VM with license type
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: "{{ resource_group }}"
+    name: "{{ hostname }}"
+    vm_size: "{{ size }}"
+    network_interfaces: "{{ az_interface_id }}"
+    virtual_network_name: "{{ vnet }}"
+    image: "{{ image }}"
+    tags: "{{ Tags }}"
+    managed_disk_type: "{{ disk_type }}"
+#    data_disks: "{{ disks }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    license_type: "Windows_Server"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: virtual_machine
+  delegate_to: localhost
+  when: 
+    - not availability_set 
+    - '"Windows" in os'
+    - availability_zone == "Automatic"
+
+- name: Create Windows VM with license type in availability zone 
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: "{{ resource_group }}"
+    name: "{{ hostname }}"
+    vm_size: "{{ size }}"
+    network_interfaces: "{{ az_interface_id }}"
+    virtual_network_name: "{{ vnet }}"
+    image: "{{ image }}"
+    tags: "{{ Tags }}"
+    managed_disk_type: "{{ disk_type }}"
+    zones: "{{ zone }}"
+#    data_disks: "{{ disks }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    license_type: "Windows_Server"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: virtual_machine
+  delegate_to: localhost
+  when: 
+    - not availability_set 
+    - '"Windows" in os'
+    - availability_zone != "Automatic"
+
+- name: Create Linux VM without license type
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: "{{ resource_group }}"
+    name: "{{ hostname }}"
+    vm_size: "{{ size }}"
+    network_interfaces: "{{ az_interface_id }}"
+    virtual_network_name: "{{ vnet }}"
+    image: "{{ image }}"
+    tags: "{{ Tags }}"
+    managed_disk_type: "{{ disk_type }}"
+#    data_disks: "{{ disks }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: virtual_machine
+  delegate_to: localhost
+  when: 
+    - not availability_set 
+    - '"RedHat" in os'
+    - availability_zone == "Automatic"
+
+- name: Create Linux VM without license type in availability zone 
+  azure.azcollection.azure_rm_virtualmachine:
+    resource_group: "{{ resource_group }}"
+    name: "{{ hostname }}"
+    vm_size: "{{ size }}"
+    network_interfaces: "{{ az_interface_id }}"
+    virtual_network_name: "{{ vnet }}"
+    image: "{{ image }}"
+    tags: "{{ Tags }}"
+    managed_disk_type: "{{ disk_type }}"
+    zones: "{{ zone }}"
+#    data_disks: "{{ disks }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    cert_validation_mode: "validate"
+  register: virtual_machine
+  delegate_to: localhost
+  when: 
+    - not availability_set 
+    - '"RedHat" in os'
+    - availability_zone != "Automatic"
+
+- name: display fact
+  debug:
+    var: virtual_machine
+
+# Commented the below block for future reference
+# - name: Create VM in Availability Set
+#   azure.azcollection.azure_rm_virtualmachine:
+#     resource_group: "{{ resource_group }}"
+#     name: "{{ hostname }}"
+#     vm_size: "{{ size }}"
+#     network_interfaces: "{{ az_interface_id }}"
+#     virtual_network_name: "{{ vnet }}"
+# ##    virtual_network_resource_group: "{{ az_network_rg }}"
+#     image: "{{ image }}"
+#     tags: "{{ vm_tags }}"
+#     managed_disk_type: "{{ disk_type }}"
+#     availability_set: "{{ groups['all'] | map('extract', hostvars, ['inventory_hostname']) | join('-') }}"
+# #    data_disks: "{{ disks }}"
+#     tenant: "{{ tenantId }}"
+#     secret: "{{ secret }}"
+#     subscription_id: "{{ subscription_Id }}"
+#     client_id: "{{ client_Id }}"
+#     cert_validation_mode: "validate"
+#   register: virtual_machine
+#   when: availability_set
+#   delegate_to: localhost
+  
+- name: Modify Disk
+  azure.azcollection.azure_rm_manageddisk:
+    name: "{{ hostname }}-datadisk-{{ item.lun }}"
+    resource_group: "{{ resource_group }}"
+    disk_size_gb: "{{ item.disk_size_gb }}"
+    managed_by: "{{ hostname }}"
+    state: present
+    storage_account_type: "{{ item.managed_disk_type }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    tags: "{{ Tags }}"
+    cert_validation_mode: "validate"
+  delegate_to: localhost
+  loop: "{{ disks[1:] }}"
+  when: availability_zone == "Automatic"
+
+- name: Modify Disk for vm in availability zone
+  azure.azcollection.azure_rm_manageddisk:
+    name: "{{ hostname }}-datadisk-{{ item.lun }}"
+    resource_group: "{{ resource_group }}"
+    disk_size_gb: "{{ item.disk_size_gb }}"
+    managed_by: "{{ hostname }}"
+    zone: "{{ zone }}"
+    state: present
+    storage_account_type: "{{ item.managed_disk_type }}"
+    # tenant: "{{ tenantId }}"
+    # secret: "{{ secret }}"
+    # subscription_id: "{{ subscription_Id }}"
+    # client_id: "{{ client_Id }}"
+    tags: "{{ Tags }}"
+    cert_validation_mode: "validate"
+  delegate_to: localhost
+  loop: "{{ disks[1:] }}"
+  when: availability_zone != "Automatic"
+
+- name: Set ansible_host to private IP
+  set_fact:
+    ansible_host: "{{ private_ip }}"
+
+- name: Inventory Sources
+  debug:
+    msg: "{{ ansible_inventory_sources }}"
+
+- name: Add private IP to inventory file
+  lineinfile:
+    path: "{{ ansible_inventory_sources }}"
+    regexp: '^(.*){{ hostname }}(.*)$'
+    line: '{{ hostname }}    ansible_host={{ private_ip }}'
+    create: yes
+  delegate_to: localhost
+
+- name: Add private IP and FQDN to /etc/hosts - TEMPORARY
+  lineinfile:
+    path: /etc/hosts
+    line: '{{ private_ip }}  {{ hostname }}.{{ domainName }}'
+  delegate_to: localhost
+  become: yes
+
+- name: Windows VM - Set ansible_host to FQDN to get past proxy - TEMPORARY
+  set_fact:
+    ansible_host: "{{ hostname }}.{{ domainName }}"
+  when: 
+    - ansible_connection == 'winrm' #and cloudProvider == 'vSphere'
+
+- name: Print private IP
+  debug:
+    var: private_ip
+
+- name: Set private IP for SNOW Writeback Azure
+  set_fact:
+    ip_addr: "{{ private_ip }}"
+
+- name: Sleep for 120 seconds and continue with play
+  ansible.builtin.wait_for:
+    timeout: 120
+  delegate_to: localhost
+
+- name: set initial connection for Azure VMs
+  set_fact:
+    ansible_winrm_transport: ntlm
+    ansible_port: 5985
+    ansible_user: "{{ win_temp_admin_user }}"
+    ansible_password: "{{ win_temp_admin_pass }}"
+    ansible_winrm_server_cert_validation: 'ignore'
+  delegate_to: localhost
+  when: ansible_connection == 'winrm' and (cloudProvider is defined and cloudProvider == 'Azure')
+
+- name: set initial connection for Azure VMs
+  set_fact:
+    ansible_connection: ssh
+    host_key_checking: False
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no' 
+    ansible_port: 22
+    ansible_user: "{{ rhelTempRootUser }}"
+    ansible_password: "{{ rhelTempRootPass }}"
+  delegate_to: localhost
+  when: ansible_connection == 'ssh' and (cloudProvider is defined and cloudProvider == 'Azure')
+
+# Commented the below block for future reference
+# - name: Setup Ansible SSH
+#   include_role:
+#     name: configure_passwordless_ssh
+#   vars:
+#     remote_machine_username: "{{ ansible_user }}"
+#     remote_machine_password: "{{ ansible_password }}"
+#     my_ip: "{{ ansible_host }}"
+#   become: yes
+#   #when: hostvars[inventory_hostname]['ansible_connection'] == 'ssh'
+#   when: ansible_connection == 'ssh' and (cloudProvider is defined and cloudProvider == 'Azure')
+
+  
+- name: Print host
+  debug:
+    var: ansible_host
+
+- name: Print port
+  debug:
+    var: ansible_port
+
+- name: Wait for up to 30 min for connection - kdc and DNS
+  wait_for_connection:
+    timeout: 1800
+    delay: 1
+    sleep: 20
+  delegate_to: localhost
+
+- setup:
+    filter: ansible_os_family
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_distribution_major_version
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_distribution_version
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_distribution_release
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_date_time
+    gather_timeout: 300
+
+- setup:
+    filter: ansible_kernel
+    gather_timeout: 300
+
+# Commented the below block for future reference
+  #  runs restart network handler at the end of the play
+  #       - name: configure nics
+  #         include_role:
+  #           name: configure_nics
+  #         vars:
+  #           networks: "{{ hostvars[inventory_hostname]['mgmt_nic'] + hostvars[inventory_hostname]['client_nics'] }}"       
+  #         when: cloudProvider is defined and cloudProvider == 'vSphere'
+
+#  - name: Execute if /etc/hosts exists
+#    block:
+#      - lineinfile:
+#          path: /etc/hosts
+#          regexp: '^127\.0\.1\.1'
+#          line: "127.0.1.1    {{ inventory_hostname }}.{{ domainName }} {{ inventory_hostname }}"
+#          state: present
+
+#       - lineinfile:
+#           path: /etc/hosts
+#           regexp: "^{{ item.ip }}"
+#           line: "{{ item.ip }}    {{ inventory_hostname }}.{{ domainName }} {{ inventory_hostname }}"
+#           state: present
+#    with_items: "{{ network_interfaces }}"
+#    become: yes
+#    when: ansible_os_family == 'RedHat' and cloudProvider == 'vSphere'
+#    ignore_errors: true
+
+- name: Change temporary disk drive letter from D to Z in Azure Windows
+  import_role:
+    name: ../Common/Roles/role_az_disk_new_letter_modify
+  #when: hostvars[inventory_hostname]['partitions'] is defined and (cloudProvider is defined and cloud)
+  when: 
+    - partitions is defined
+    - '"Windows" in os'
+  ignore_errors: yes
+
+- name: Run partition role
+  import_role:
+    name: ../Common/Roles/role_configure_partition
+  vars:
+    partitions: "{{ partitions }}"
+  when: 
+    - partitions is defined 
+
+- name: Run hostname and domain join for Azure Windows VMs. Delete entry in /etc/hosts     
+  include_role:
+    name: "{{ item }}"
+  with_items:
+    - ../Common/Roles/role_hostname_config
+    - ../Common/Roles/role_ad_domain_membership_config
+    #- ../Common/Roles/role_etc_hosts_config
+  when: ansible_connection == 'winrm' and (cloudProvider is defined and cloudProvider == 'Azure')
