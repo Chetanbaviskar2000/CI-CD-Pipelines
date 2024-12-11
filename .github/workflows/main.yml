@@ -1,11 +1,11 @@
-name: Triggered by ServiceNow ppls
+name: Triggered by ServiceNow ppls.lll
 
 on:
   workflow_dispatch:
     inputs:
       jsonPayload:
         description: 'Custom JSON payload'
-        required: true
+        required: "true"
         default: '{"key1": "value1", "key2": "value2"}'
 
 jobs:
