@@ -6,8 +6,12 @@ name: CI Pipeline..............
 #       - main
 
 on:
-  repository_dispatch:
-    types: [servicenow_form_submission]
+  workflow_dispatch:
+    inputs:
+      jsonPayload:
+        description: 'Custom JSON payload'
+        required: true
+        default: '{"key1": "value1", "key2": "value2"}'
 
 jobs:
   build:
@@ -22,6 +26,31 @@ jobs:
       with:
         python-version: 3.9
 
+    - name: Update apt-get
+      run: sudo apt-get update
+
+    - name: Install Kerberos
+      run: sudo apt-get install -y krb5-user
+
+    - name: Install AWS collection
+      run: ansible-galaxy collection install amazon.aws
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # Add any other dependencies you need to install here
+
+    - name: Parse JSON Input
+      id: parse_json
+      run: |
+        echo "${{ github.event.inputs.jsonPayload }}" > payload.json
+        jq '.' payload.json
+
+    - name: Use JSON Input
+      run: |
+        JSON=$(cat payload.json)
+        echo "Key1: $(echo $JSON | jq -r '.key1')"
+        echo "Key2: $(echo $JSON | jq -r '.key2')"
     - name: Update apt-get
       run: sudo apt-get update
 
