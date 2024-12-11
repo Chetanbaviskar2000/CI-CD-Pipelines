@@ -1,4 +1,4 @@
-name: Triggered by ServiceNow
+name: Triggered by ServiceNow ppls
 
 on:
   workflow_dispatch:
