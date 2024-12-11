@@ -159,3 +159,42 @@ stages:
          arguments: >
           -runId "$(Build.BuildId)" -Pat "$(IaCADOsvcPAT)" -VMName "$(vmhostname)"
        condition: always()
+
+
+  name: Example Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      jsonPayload:
+        description: 'Custom JSON payload'
+        required: true
+        default: '{"key1": "value1", "key2": "value2"}'
+
+jobs:
+  example_job:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Parse JSON Input
+      id: parse_json
+      run: |
+        echo "${{ github.event.inputs.jsonPayload }}" > payload.json
+        jq '.' payload.json
+
+    - name: Use JSON Input
+      run: |
+        JSON=$(cat payload.json)
+        echo "Key1: $(echo $JSON | jq -r '.key1')"
+        echo "Key2: $(echo $JSON | jq -r '.key2')"
+Explanation
+Define Inputs: In the on section, under workflow_dispatch, we define an input called jsonPayload. This input is required and has a default JSON string.
+Parse JSON Input: In the Parse JSON Input step, we save the JSON payload to a file and use jq to parse it.
+Use JSON Input: In the Use JSON Input step, we read the JSON file and extract values using jq.
+Running the Workflow
+When you manually trigger this workflow via the GitHub Actions interface, you will be prompted to provide the jsonPayload input. You can enter your custom JSON payload, and the workflow will process it accordingly.
+
+This approach allows you to pass complex data structures to your workflows, making them more flexible and powerful.
