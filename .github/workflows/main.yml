@@ -54,12 +54,12 @@ jobs:
       run: terraform init
       working-directory: .
 
-    # - name: Validate Terraform Configuration
-    #   env:
-    #     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-    #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-    #   run: terraform validate
-    #   working-directory: .
+    - name: Validate Terraform Configuration
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      run: terraform validate
+      working-directory: .
 
     # - name: Plan Terraform Deployment
     #   env:
