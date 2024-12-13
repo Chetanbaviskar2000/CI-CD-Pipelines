@@ -1,17 +1,24 @@
 provider "aws" {
-  region     = "us-east-1" # Change to your preferred region
-  access_key = var.AWS_ACCESS_KEY_ID
-  secret_key = var.AWS_SECRET_ACCESS_KEY
+  region = "us-east-1" # Change to your preferred region
+  access_key = var.aws_access_key
+  secret_key = var.aws_secret_key
+  token      = var.aws_session_token
 }
 
-variable "AWS_ACCESS_KEY_ID" {
+variable "aws_access_key" {
   description = "The AWS access key"
   type        = string
   sensitive   = true
 }
 
-variable "AWS_SECRET_ACCESS_KEY" {
+variable "aws_secret_key" {
   description = "The AWS secret key"
+  type        = string
+  sensitive   = true
+}
+
+variable "aws_session_token" {
+  description = "The AWS session token"
   type        = string
   sensitive   = true
 }
@@ -46,4 +53,3 @@ output "public_ip" {
   description = "The public IP address of the EC2 instance"
   value       = aws_instance.example.public_ip
 }
-
