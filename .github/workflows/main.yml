@@ -39,13 +39,18 @@ jobs:
         sudo apt-get update && sudo apt-get install -y terraform
 
     - name: Print working directory
-      id: print_working_dir
       run: echo "Working directory is $(pwd)"
 
     - name: Initialize Terraform
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       run: terraform init
-      working-directory: ${{ steps.print_working_dir.outputs.working_dir }}
+      working-directory: ./path/to/your/terraform/files
 
     - name: Apply Terraform
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       run: terraform apply -auto-approve
-      working-directory: ${{ steps.print_working_dir.outputs.working_dir }}
+      working-directory: ./path/to/your/terraform/files
