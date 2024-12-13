@@ -28,7 +28,7 @@ variable "aws_secret_key" {
 variable "ami_id" {
   description = "The AMI ID to use for the instance"
   type        = string
-  default     = "ami-0c55b159cbfafe1f0" # Amazon Linux 2 AMI (Free tier eligible)
+  default     = "ami-0e2c8caa4b6378d8c" # Amazon Linux 2 AMI (Free tier eligible)
 }
 
 variable "instance_type" {
