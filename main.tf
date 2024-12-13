@@ -1,11 +1,19 @@
 provider "aws" {
-  region = var.aws_region
+  region     = "us-west-2" # Change to your preferred region
+  access_key = var.aws_access_key
+  secret_key = var.aws_secret_key
 }
 
-variable "aws_region" {
-  description = "The AWS region to create resources in"
+variable "aws_access_key" {
+  description = "The AWS access key"
   type        = string
-  default     = "us-west-2" # Change to your preferred region
+  default     = ""
+}
+
+variable "aws_secret_key" {
+  description = "The AWS secret key"
+  type        = string
+  default     = ""
 }
 
 variable "ami_id" {
