@@ -39,7 +39,7 @@ jobs:
     - name: Print working directory
       run: echo "Working directory is $(pwd)"
       
-  terraform-init:
+  terraform-operations:
     runs-on: ubuntu-latest
     needs: build
 
@@ -54,39 +54,12 @@ jobs:
       run: terraform init
       working-directory: .
 
-    - name: Verify Provider Installation
-      run: terraform providers
-      working-directory: .
-
-  terraform-validate:
-    runs-on: ubuntu-latest
-    needs: terraform-init
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Reinitialize Terraform
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      run: terraform init
-      working-directory: .
-
     - name: Validate Terraform Configuration
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       run: terraform validate
       working-directory: .
-
-  terraform-plan:
-    runs-on: ubuntu-latest
-    needs: terraform-validate
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
 
     - name: Plan Terraform Deployment
       env:
@@ -97,7 +70,7 @@ jobs:
 
   # terraform-apply:
   #   runs-on: ubuntu-latest
-  #   needs: terraform-plan
+  #   needs: terraform-operations
 
   #   steps:
   #   - name: Checkout repository
