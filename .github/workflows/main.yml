@@ -1,12 +1,8 @@
-name: Triggered by ServiceNow ppls.lll
-
-on:
-  workflow_dispatch:
-    inputs:
-      jsonPayload:
-        description: 'Custom JSON payload'
-        required: true
-        default: '{"key1": "value1", "key2": "value2"}'
+name: practice
+on: 
+  push:
+    branches:
+      - main
 
 jobs:
   build:
@@ -35,14 +31,21 @@ jobs:
         python -m pip install --upgrade pip
         # Add any other dependencies you need to install here
 
-    - name: Parse JSON Input
-      id: parse_json
+    - name: Install Terraform
       run: |
-        echo "${{ github.event.inputs.jsonPayload }}" > payload.json
-        jq '.' payload.json
+        sudo apt-get install -y gnupg software-properties-common curl
+        curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+        sudo apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+        sudo apt-get update && sudo apt-get install -y terraform
 
-    - name: Use JSON Input
-      run: |
-        JSON=$(cat payload.json)
-        echo "Key1: $(echo $JSON | jq -r '.key1')"
-        echo "Key2: $(echo $JSON | jq -r '.key2')"
+    - name: Print working directory
+      id: print_working_dir
+      run: echo "Working directory is $(pwd)"
+
+    - name: Initialize Terraform
+      run: terraform init
+      working-directory: ${{ steps.print_working_dir.outputs.working_dir }}
+
+    - name: Apply Terraform
+      run: terraform apply -auto-approve
+      working-directory: ${{ steps.print_working_dir.outputs.working_dir }}
