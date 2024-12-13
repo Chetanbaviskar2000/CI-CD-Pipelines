@@ -8,10 +8,9 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-east-1" # Change to your preferred region
+  region     = "us-east-1" # Change to your preferred region
   access_key = var.aws_access_key
   secret_key = var.aws_secret_key
-  token      = var.aws_session_token
 }
 
 variable "aws_access_key" {
@@ -22,12 +21,6 @@ variable "aws_access_key" {
 
 variable "aws_secret_key" {
   description = "The AWS secret key"
-  type        = string
-  sensitive   = true
-}
-
-variable "aws_session_token" {
-  description = "The AWS session token"
   type        = string
   sensitive   = true
 }
@@ -61,4 +54,3 @@ output "instance_id" {
 output "public_ip" {
   description = "The public IP address of the EC2 instance"
   value       = aws_instance.example.public_ip
-}
